@@ -41,3 +41,7 @@ In the [`skills/web-browser`](skills/web-browser) folder is a Claude Skill that 
 ## tmux
 
 In the [`skills/tmux`](skills/tmux) folder is a Claude Skill that lets it drive tmux directly for interactive CLI workflows (python, gdb, etc.) by sending keystrokes and scraping pane output.  It uses stock tmux on macOS/Linux and includes helper scripts in `tools` to find sessions and wait for prompts.
+
+## sentry
+
+In the [`skills/sentry`](skills/sentry) folder there is an alternative way to access Sentry as a Claude Skill.  I found the other methods to talk to Sentry token inefficient and just not great.  Right now it can only read issues though and might not be ideal yet.
