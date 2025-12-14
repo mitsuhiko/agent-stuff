@@ -42,6 +42,7 @@ spawn(
   [
     "--remote-debugging-port=9222",
     `--user-data-dir=${process.env["HOME"]}/.cache/scraping`,
+    "--profile-directory=Default",
   ],
   { detached: true, stdio: "ignore" },
 ).unref();
