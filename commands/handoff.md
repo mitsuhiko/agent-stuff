@@ -42,7 +42,7 @@ Additionally create a "slug" for this handoff.  The "slug" is how we will refer 
 
 Together with the slug create a "Readable Summary".  Examples:
 
-* Implement Currnet User API Handler
+* Implement Current User API Handler
 * Implement Authentication
 * Fix Issue #42
 
