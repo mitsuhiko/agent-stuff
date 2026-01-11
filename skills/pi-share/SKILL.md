@@ -9,9 +9,17 @@ Load and parse session transcripts from shittycodingagent.ai (pi-share) URLs.
 
 ## When to Use
 
-Use this skill when the user provides a URL like:
+**Loading sessions:** Use this skill when the user provides a URL like:
 - `https://shittycodingagent.ai/session/?<gist_id>`
 - Or just a gist ID like `46aee35206aefe99257bc5d5e60c6121`
+
+**Human summaries:** Use `--human-summary` when the user asks you to:
+- Summarize what a human did in a pi/coding agent session
+- Understand how a user interacted with an agent
+- Analyze user behavior, steering patterns, or prompting style
+- Get a human-centric view of a session (not what the agent did, but what the human did)
+
+The human summary focuses on: initial goals, re-prompts, steering/corrections, interventions, and overall prompting style.
 
 ## How It Works
 
@@ -37,7 +45,20 @@ node ~/.pi/agent/skills/pi-share/fetch-session.mjs <gist-id> --system
 
 # Get tool definitions
 node ~/.pi/agent/skills/pi-share/fetch-session.mjs <gist-id> --tools
+
+# Get human-centric summary (what did the human do in this session?)
+node ~/.pi/agent/skills/pi-share/fetch-session.mjs <gist-id> --human-summary
 ```
+
+## Human Summary
+
+The `--human-summary` flag generates a ~300 word summary focused on the human's experience:
+- What was their initial goal?
+- How often did they re-prompt or steer the agent?
+- What kind of interventions did they make? (corrections, clarifications, frustration)
+- How specific or vague were their instructions?
+
+This uses claude-haiku-4-5 via `pi -p` to analyze the condensed session transcript.
 
 ## Session Data Structure
 
