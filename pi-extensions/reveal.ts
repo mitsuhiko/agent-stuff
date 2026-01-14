@@ -1,10 +1,21 @@
-import { existsSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import {
+	Container,
+	type SelectItem,
+	SelectList,
+	Text,
+	type TUI,
+	Input,
+	Spacer,
+	fuzzyFilter,
+	getEditorKeybindings,
+} from "@mariozechner/pi-tui";
 
 type ContentBlock = {
 	type?: string;
@@ -22,6 +33,8 @@ type FileReference = {
 const FILE_TAG_REGEX = /<file\s+name=["']([^"']+)["']>/g;
 const FILE_URL_REGEX = /file:\/\/[^\s"'<>]+/g;
 const PATH_REGEX = /(?:^|[\s"'`([{<])((?:~|\/)[^\s"'`<>)}\]]+)/g;
+
+const MAX_EDIT_BYTES = 40 * 1024 * 1024;
 
 const extractFileReferencesFromText = (text: string): string[] => {
 	const refs: string[] = [];
@@ -121,9 +134,32 @@ const sanitizeReference = (raw: string): string => {
 	return value;
 };
 
+const isCommentLikeReference = (value: string): boolean => value.startsWith("//");
+
+const stripLineSuffix = (value: string): string => {
+	let result = value.replace(/#L\d+(C\d+)?$/i, "");
+	const lastSeparator = Math.max(result.lastIndexOf("/"), result.lastIndexOf("\\"));
+	const segmentStart = lastSeparator >= 0 ? lastSeparator + 1 : 0;
+	const segment = result.slice(segmentStart);
+	const colonIndex = segment.indexOf(":");
+	if (colonIndex >= 0 && /\d/.test(segment[colonIndex + 1] ?? "")) {
+		result = result.slice(0, segmentStart + colonIndex);
+		return result;
+	}
+
+	const lastColon = result.lastIndexOf(":");
+	if (lastColon > lastSeparator) {
+		const suffix = result.slice(lastColon + 1);
+		if (/^\d+(?::\d+)?$/.test(suffix)) {
+			result = result.slice(0, lastColon);
+		}
+	}
+	return result;
+};
+
 const normalizeReferencePath = (raw: string, cwd: string): string | null => {
 	let candidate = sanitizeReference(raw);
-	if (!candidate) {
+	if (!candidate || isCommentLikeReference(candidate)) {
 		return null;
 	}
 
@@ -135,12 +171,23 @@ const normalizeReferencePath = (raw: string, cwd: string): string | null => {
 		}
 	}
 
+	candidate = stripLineSuffix(candidate);
+	if (!candidate || isCommentLikeReference(candidate)) {
+		return null;
+	}
+
 	if (candidate.startsWith("~")) {
 		candidate = path.join(os.homedir(), candidate.slice(1));
 	}
 
 	if (!path.isAbsolute(candidate)) {
 		candidate = path.resolve(cwd, candidate);
+	}
+
+	candidate = path.normalize(candidate);
+	const root = path.parse(candidate).root;
+	if (candidate.length > root.length) {
+		candidate = candidate.replace(/[\\/]+$/, "");
 	}
 
 	return candidate;
@@ -193,37 +240,89 @@ const findLatestFileReference = (entries: SessionEntry[], cwd: string): FileRefe
 	return refs[0] ?? null;
 };
 
-const showFileSelector = async (ctx: ExtensionContext, items: FileReference[]): Promise<FileReference | null> => {
-	const selectItems: SelectItem[] = items.map((item) => ({
-		value: item.path,
-		label: item.display,
-		description: !item.exists ? "missing" : item.isDirectory ? "directory" : "",
-	}));
+const showFileSelector = async (
+	ctx: ExtensionContext,
+	items: FileReference[],
+	selectedPath?: string | null,
+): Promise<FileReference | null> => {
+	const seenPaths = new Set<string>();
+	const uniqueItems = items.filter((item) => {
+		if (seenPaths.has(item.path)) {
+			return false;
+		}
+		seenPaths.add(item.path);
+		return true;
+	});
+	const orderedItems = uniqueItems.filter((item) => item.exists);
+
+	const selectItems: SelectItem[] = orderedItems.map((item) => {
+		const status = item.isDirectory ? " [directory]" : "";
+		return {
+			value: item.path,
+			label: `${item.display}${status}`,
+			description: "",
+		};
+	});
 
 	return ctx.ui.custom<FileReference | null>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Select a file to reveal"))));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Select a file"))));
 
-		const selectList = new SelectList(selectItems, Math.min(selectItems.length, 12), {
-			selectedPrefix: (text) => theme.fg("accent", text),
-			selectedText: (text) => theme.fg("accent", text),
-			description: (text) => theme.fg("muted", text),
-			scrollInfo: (text) => theme.fg("dim", text),
-			noMatch: (text) => theme.fg("warning", text),
-		});
+		const searchInput = new Input();
+		container.addChild(searchInput);
+		container.addChild(new Spacer(1));
 
-		selectList.searchable = true;
-
-		selectList.onSelect = (item) => {
-			const selected = items.find((entry) => entry.path === item.value);
-			done(selected ?? null);
-		};
-		selectList.onCancel = () => done(null);
-
-		container.addChild(selectList);
+		const listContainer = new Container();
+		container.addChild(listContainer);
 		container.addChild(new Text(theme.fg("dim", "Type to filter • enter to select • esc to cancel")));
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+		let filteredItems = selectItems;
+		let selectList: SelectList | null = null;
+
+		const updateList = () => {
+			listContainer.clear();
+
+			if (filteredItems.length === 0) {
+				listContainer.addChild(new Text(theme.fg("warning", "  No matching files"), 0, 0));
+				selectList = null;
+				return;
+			}
+
+			selectList = new SelectList(filteredItems, Math.min(filteredItems.length, 12), {
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			});
+
+			if (selectedPath) {
+				const index = filteredItems.findIndex((item) => item.value === selectedPath);
+				if (index >= 0) {
+					selectList.setSelectedIndex(index);
+				}
+			}
+
+			selectList.onSelect = (item) => {
+				const selected = orderedItems.find((entry) => entry.path === item.value);
+				done(selected ?? null);
+			};
+			selectList.onCancel = () => done(null);
+
+			listContainer.addChild(selectList);
+		};
+
+		const applyFilter = () => {
+			const query = searchInput.getValue();
+			filteredItems = query
+				? fuzzyFilter(selectItems, query, (item) => `${item.label} ${item.value} ${item.description ?? ""}`)
+				: selectItems;
+			updateList();
+		};
+
+		applyFilter();
 
 		return {
 			render(width: number) {
@@ -233,20 +332,71 @@ const showFileSelector = async (ctx: ExtensionContext, items: FileReference[]): 
 				container.invalidate();
 			},
 			handleInput(data: string) {
-				selectList.handleInput(data);
+				const kb = getEditorKeybindings();
+				if (
+					kb.matches(data, "selectUp") ||
+					kb.matches(data, "selectDown") ||
+					kb.matches(data, "selectConfirm") ||
+					kb.matches(data, "selectCancel")
+				) {
+					if (selectList) {
+						selectList.handleInput(data);
+					} else if (kb.matches(data, "selectCancel")) {
+						done(null);
+					}
+					tui.requestRender();
+					return;
+				}
+
+				searchInput.handleInput(data);
+				applyFilter();
 				tui.requestRender();
 			},
 		};
 	});
 };
 
-const showActionSelector = async (ctx: ExtensionContext, canQuickLook: boolean): Promise<"reveal" | "quicklook" | null> => {
+type EditCheckResult = {
+	allowed: boolean;
+	reason?: string;
+	content?: string;
+};
+
+const getEditableContent = (target: FileReference): EditCheckResult => {
+	if (!existsSync(target.path)) {
+		return { allowed: false, reason: "File not found" };
+	}
+
+	const stats = statSync(target.path);
+	if (stats.isDirectory()) {
+		return { allowed: false, reason: "Directories cannot be edited" };
+	}
+
+	if (stats.size >= MAX_EDIT_BYTES) {
+		return { allowed: false, reason: "File is too large" };
+	}
+
+	const buffer = readFileSync(target.path);
+	if (buffer.includes(0)) {
+		return { allowed: false, reason: "File contains null bytes" };
+	}
+
+	return { allowed: true, content: buffer.toString("utf8") };
+};
+
+const showActionSelector = async (
+	ctx: ExtensionContext,
+	options: { canQuickLook: boolean; canEdit: boolean },
+): Promise<"reveal" | "quicklook" | "open" | "edit" | "addToPrompt" | null> => {
 	const actions: SelectItem[] = [
 		{ value: "reveal", label: "Reveal in Finder" },
-		...(canQuickLook ? [{ value: "quicklook", label: "Open in Quick Look" }] : []),
+		{ value: "open", label: "Open" },
+		{ value: "addToPrompt", label: "Add to prompt" },
+		...(options.canQuickLook ? [{ value: "quicklook", label: "Open in Quick Look" }] : []),
+		...(options.canEdit ? [{ value: "edit", label: "Edit" }] : []),
 	];
 
-	return ctx.ui.custom<"reveal" | "quicklook" | null>((tui, theme, _kb, done) => {
+	return ctx.ui.custom<"reveal" | "quicklook" | "open" | "edit" | "addToPrompt" | null>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 		container.addChild(new Text(theme.fg("accent", theme.bold("Choose action"))));
@@ -259,7 +409,8 @@ const showActionSelector = async (ctx: ExtensionContext, canQuickLook: boolean):
 			noMatch: (text) => theme.fg("warning", text),
 		});
 
-		selectList.onSelect = (item) => done(item.value as "reveal" | "quicklook");
+		selectList.onSelect = (item) =>
+			done(item.value as "reveal" | "quicklook" | "open" | "edit" | "addToPrompt");
 		selectList.onCancel = () => done(null);
 
 		container.addChild(selectList);
@@ -280,6 +431,83 @@ const showActionSelector = async (ctx: ExtensionContext, canQuickLook: boolean):
 		};
 	});
 };
+
+const openPath = async (pi: ExtensionAPI, ctx: ExtensionContext, target: FileReference): Promise<void> => {
+	if (!existsSync(target.path)) {
+		if (ctx.hasUI) {
+			ctx.ui.notify(`File not found: ${target.path}`, "error");
+		}
+		return;
+	}
+
+	const command = process.platform === "darwin" ? "open" : "xdg-open";
+	const result = await pi.exec(command, [target.path]);
+	if (result.code !== 0 && ctx.hasUI) {
+		const errorMessage = result.stderr?.trim() || `Failed to open ${target.path}`;
+		ctx.ui.notify(errorMessage, "error");
+	}
+};
+
+const openExternalEditor = (tui: TUI, editorCmd: string, content: string): string | null => {
+	const tmpFile = path.join(os.tmpdir(), `pi-reveal-edit-${Date.now()}.txt`);
+
+	try {
+		writeFileSync(tmpFile, content, "utf8");
+		tui.stop();
+
+		const [editor, ...editorArgs] = editorCmd.split(" ");
+		const result = spawnSync(editor, [...editorArgs, tmpFile], { stdio: "inherit" });
+
+		if (result.status === 0) {
+			return readFileSync(tmpFile, "utf8").replace(/\n$/, "");
+		}
+
+		return null;
+	} finally {
+		try {
+			unlinkSync(tmpFile);
+		} catch {
+		}
+		tui.start();
+		tui.requestRender(true);
+	}
+};
+
+const editPath = async (
+	ctx: ExtensionContext,
+	target: FileReference,
+	content: string,
+): Promise<void> => {
+	const editorCmd = process.env.VISUAL || process.env.EDITOR;
+	if (!editorCmd) {
+		ctx.ui.notify("No editor configured. Set $VISUAL or $EDITOR.", "warning");
+		return;
+	}
+
+	const updated = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		const status = new Text(theme.fg("dim", `Opening ${editorCmd}...`));
+
+		queueMicrotask(() => {
+			const result = openExternalEditor(tui, editorCmd, content);
+			done(result);
+		});
+
+		return status;
+	});
+
+	if (updated === null) {
+		ctx.ui.notify("Edit cancelled", "info");
+		return;
+	}
+
+	try {
+		writeFileSync(target.path, updated, "utf8");
+	} catch {
+		ctx.ui.notify(`Failed to save ${target.path}`, "error");
+		return;
+	}
+};
+
 
 const revealPath = async (pi: ExtensionAPI, ctx: ExtensionContext, target: FileReference): Promise<void> => {
 	if (!existsSync(target.path)) {
@@ -337,53 +565,95 @@ const quickLookPath = async (pi: ExtensionAPI, ctx: ExtensionContext, target: Fi
 	}
 };
 
+const addFileToPrompt = (ctx: ExtensionContext, target: FileReference): void => {
+	const mentionTarget = target.display || target.path;
+	const mention = `@${mentionTarget}`;
+	const current = ctx.ui.getEditorText();
+	const separator = current && !current.endsWith(" ") ? " " : "";
+	ctx.ui.setEditorText(`${current}${separator}${mention}`);
+	ctx.ui.notify(`Added ${mention} to prompt`, "info");
+};
+
+const runFileBrowser = async (pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> => {
+	if (!ctx.hasUI) {
+		ctx.ui.notify("Reveal requires interactive mode", "error");
+		return;
+	}
+
+	const entries = ctx.sessionManager.getBranch();
+	const references = collectRecentFileReferences(entries, ctx.cwd, 100);
+
+	if (references.length === 0) {
+		ctx.ui.notify("No file reference found in the session", "warning");
+		return;
+	}
+
+	let lastSelectedPath: string | null = null;
+	while (true) {
+		const selection = await showFileSelector(ctx, references, lastSelectedPath);
+		if (!selection) {
+			ctx.ui.notify("Reveal cancelled", "info");
+			return;
+		}
+
+		lastSelectedPath = selection.path;
+
+		if (!selection.exists) {
+			ctx.ui.notify(`File not found: ${selection.path}`, "error");
+			return;
+		}
+
+		const editCheck = getEditableContent(selection);
+		const canQuickLook = process.platform === "darwin" && !selection.isDirectory;
+
+		const action = await showActionSelector(ctx, {
+			canQuickLook,
+			canEdit: editCheck.allowed,
+		});
+		if (!action) {
+			continue;
+		}
+
+		switch (action) {
+			case "quicklook":
+				await quickLookPath(pi, ctx, selection);
+				return;
+			case "open":
+				await openPath(pi, ctx, selection);
+				return;
+			case "edit":
+				if (!editCheck.allowed || editCheck.content === undefined) {
+					ctx.ui.notify(editCheck.reason ?? "File cannot be edited", "warning");
+					return;
+				}
+				await editPath(ctx, selection, editCheck.content);
+				return;
+			case "addToPrompt":
+				addFileToPrompt(ctx, selection);
+				return;
+			default:
+				await revealPath(pi, ctx, selection);
+				return;
+		}
+	}
+};
+
 export default function (pi: ExtensionAPI): void {
-	pi.registerCommand("reveal", {
-		description: "Reveal or Quick Look files mentioned in the conversation",
+	pi.registerCommand("files", {
+		description: "Reveal, open, or edit files mentioned in the conversation",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("Reveal requires interactive mode", "error");
-				return;
-			}
-
-			const entries = ctx.sessionManager.getBranch();
-			const references = collectRecentFileReferences(entries, ctx.cwd, 100);
-
-			if (references.length === 0) {
-				ctx.ui.notify("No file reference found in the session", "warning");
-				return;
-			}
-
-			const selection = await showFileSelector(ctx, references);
-			if (!selection) {
-				ctx.ui.notify("Reveal cancelled", "info");
-				return;
-			}
-
-			if (!selection.exists) {
-				ctx.ui.notify(`File not found: ${selection.path}`, "error");
-				return;
-			}
-
-			const canQuickLook = process.platform === "darwin" && !selection.isDirectory;
-			if (process.platform === "darwin") {
-				const action = await showActionSelector(ctx, canQuickLook);
-				if (!action) {
-					ctx.ui.notify("Reveal cancelled", "info");
-					return;
-				}
-
-				if (action === "quicklook") {
-					await quickLookPath(pi, ctx, selection);
-					return;
-				}
-			}
-
-			await revealPath(pi, ctx, selection);
+			await runFileBrowser(pi, ctx);
 		},
 	});
 
 	pi.registerShortcut("ctrl+f", {
+		description: "Browse files mentioned in the session",
+		handler: async (ctx) => {
+			await runFileBrowser(pi, ctx);
+		},
+	});
+
+	pi.registerShortcut("ctrl+r", {
 		description: "Reveal the latest file reference in Finder",
 		handler: async (ctx) => {
 			const entries = ctx.sessionManager.getBranch();
@@ -400,7 +670,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerShortcut("ctrl+shift+f", {
+	pi.registerShortcut("ctrl+shift+r", {
 		description: "Quick Look the latest file reference",
 		handler: async (ctx) => {
 			const entries = ctx.sessionManager.getBranch();

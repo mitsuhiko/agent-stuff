@@ -520,29 +520,4 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			await executeReview(ctx, target);
 		},
 	});
-
-	// Register Ctrl+R shortcut for quick review
-	pi.registerShortcut(Key.ctrl("r"), {
-		description: "Start code review",
-		handler: async (ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("Review requires interactive mode", "error");
-				return;
-			}
-
-			const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
-			if (code !== 0) {
-				ctx.ui.notify("Not a git repository", "error");
-				return;
-			}
-
-			const target = await showReviewSelector(ctx);
-			if (!target) {
-				ctx.ui.notify("Review cancelled", "info");
-				return;
-			}
-
-			await executeReview(ctx, target);
-		},
-	});
 }
