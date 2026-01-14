@@ -80,6 +80,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 
 * [`qna.ts`](pi-extensions/qna.ts) - Extracts questions from the last assistant message into the editor for easy answering. Uses Claude Haiku for cost-efficient extraction when available.
 * [`answer.ts`](pi-extensions/answer.ts) - Alternative to `qna.ts` with a custom interactive TUI for answering questions one by one.
+* [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions. Includes Ctrl+R shortcut.
 
 ## PI Coding Agent Themes
 
