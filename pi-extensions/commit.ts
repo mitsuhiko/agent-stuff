@@ -72,16 +72,34 @@ export default function commit(pi: ExtensionAPI) {
 			let prompt: string;
 			switch (mode) {
 				case "auto":
-					prompt = `Analyze the current git status and changes. Determine what should be committed, stage the appropriate files, and draft a commit message. Use git_commit_with_user_approval to let me review and confirm the commit.`;
+					prompt = `Analyze the current git status and changes. Determine what should be committed, stage the appropriate files, and draft a commit message. Use git_commit_with_user_approval to let me review and confirm the commit.
+
+IMPORTANT: Be very selective about what you commit. Only include files that are clearly related to recent work in this session or the task at hand. Do NOT commit:
+- Untracked files unless they are clearly part of the current work
+- Unrelated local changes that may have been sitting in the working directory
+- Configuration files, logs, or other artifacts that shouldn't be in version control
+
+When in doubt, leave a file out. The user can always add more files manually.`;
 					break;
 				case "staged":
 					prompt = `Check what files are currently staged (git diff --cached). Draft a commit message for the staged changes. Use git_commit_with_user_approval to let me review and confirm the commit. Do not stage any additional files.`;
 					break;
 				case "changed":
-					prompt = `Stage all changed files (git add -A) and draft a commit message based on the changes. Use git_commit_with_user_approval to let me review and confirm the commit.`;
+					prompt = `Stage all tracked files that have been modified (git add -u) and draft a commit message based on the changes. Use git_commit_with_user_approval to let me review and confirm the commit.
+
+NOTE: This only stages already-tracked files that have been modified, not untracked files. This is equivalent to what 'git commit -a' does.`;
 					break;
 				case "other":
-					prompt = `I want to commit: ${instruction}\n\nAnalyze the git status, stage the relevant files for this request, and draft a commit message. Use git_commit_with_user_approval to let me review and confirm the commit.`;
+					prompt = `I want to commit: ${instruction}
+
+Analyze the git status and stage ONLY the files that are directly relevant to this request. Draft a commit message. Use git_commit_with_user_approval to let me review and confirm the commit.
+
+IMPORTANT: Be very conservative about what you include. Only stage files that are clearly related to the requested commit. Do NOT include:
+- Unrelated local changes that happen to be in the working directory
+- Untracked files unless explicitly part of the request
+- Files that seem like they might be leftover from other work
+
+When in doubt, leave a file out.`;
 					break;
 				default:
 					ctx.ui.notify("Unknown mode", "error");
