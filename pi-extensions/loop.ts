@@ -318,7 +318,7 @@ export default function loopExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "signal_loop_success",
 		label: "Signal Loop Success",
-		description: "Stop the active loop when the breakout condition is satisfied. Only call when verified done with the break-out condition.",
+		description: "Stop the active loop when the breakout condition is satisfied. Only call this tool when explicitly instructed to do so by the user, tool or system prompt.",
 		parameters: Type.Object({}),
 		async execute(_toolCallId, _params, _onUpdate, ctx) {
 			if (!loopState.active) {
