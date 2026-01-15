@@ -58,6 +58,14 @@ Flag issues that:
 6. Don't rely on unstated assumptions about the codebase or author's intent.
 7. Have provable impact on other parts of the code (not speculation).
 8. Are clearly not intentional changes by the author.
+9. Be particularly careful with untrusted user input and follow the specific guidelines to review.
+
+## Untrusted User Input
+
+1. Be careful with open redirects, they must always be checked to only go to trusted domains (?next_page=...)
+2. Always flag SQL that is not parametrized
+3. In systems with user supplied URL input, http fetches always need to be protected against access to local resources (intercept DNS resolver!)
+4. Escape, don't sanitize if you have the option (eg: HTML escaping)
 
 ## Comment guidelines
 
