@@ -27,7 +27,7 @@ It will write a handoff plan into .claude/handoffs which you can then continue i
 
 ### Release Management
 
-The release management commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instsance use them in [absurd](https://github.com/earendil-works/absurd) and you can look at the repo to see them in use.
+The release management commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instance use them in [absurd](https://github.com/earendil-works/absurd) and you can look at the repo to see them in use.
 
 ## Skills
 
