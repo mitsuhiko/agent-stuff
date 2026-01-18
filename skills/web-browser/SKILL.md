@@ -65,3 +65,27 @@ Run after navigating to a page:
 ```bash
 ./scripts/nav.js https://example.com && ./scripts/dismiss-cookies.js
 ```
+
+## Background Logging (Console + Errors + Network)
+
+Automatically started by `start.js` and writes JSONL logs to:
+
+```
+~/.cache/agent-web/logs/YYYY-MM-DD/<targetId>.jsonl
+```
+
+Manually start:
+```bash
+./scripts/watch.js
+```
+
+Tail latest log:
+```bash
+./scripts/logs-tail.js           # dump current log and exit
+./scripts/logs-tail.js --follow  # keep following
+```
+
+Summarize network responses:
+```bash
+./scripts/net-summary.js
+```
