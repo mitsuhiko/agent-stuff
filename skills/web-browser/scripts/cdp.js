@@ -46,6 +46,7 @@ class CDP {
     this.id = 0;
     this.callbacks = new Map();
     this.sessions = new Map();
+    this.eventHandlers = new Map();
 
     ws.on("message", (data) => {
       const msg = JSON.parse(data.toString());
@@ -57,8 +58,42 @@ class CDP {
         } else {
           resolve(msg.result);
         }
+        return;
+      }
+
+      if (msg.method) {
+        this.emit(msg.method, msg.params || {}, msg.sessionId || null);
       }
     });
+  }
+
+  on(method, handler) {
+    if (!this.eventHandlers.has(method)) {
+      this.eventHandlers.set(method, new Set());
+    }
+    this.eventHandlers.get(method).add(handler);
+    return () => this.off(method, handler);
+  }
+
+  off(method, handler) {
+    const handlers = this.eventHandlers.get(method);
+    if (!handlers) return;
+    handlers.delete(handler);
+    if (handlers.size === 0) {
+      this.eventHandlers.delete(method);
+    }
+  }
+
+  emit(method, params, sessionId) {
+    const handlers = this.eventHandlers.get(method);
+    if (!handlers || handlers.size === 0) return;
+    for (const handler of handlers) {
+      try {
+        handler(params, sessionId);
+      } catch {
+        // Ignore handler errors to keep CDP session alive.
+      }
+    }
   }
 
   send(method, params = {}, sessionId = null, timeout = 10000) {

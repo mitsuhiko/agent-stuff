@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { spawn, execSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const useProfile = process.argv[2] === "--profile";
 
@@ -67,6 +69,11 @@ if (!connected) {
   console.error("✗ Failed to connect to Chrome");
   process.exit(1);
 }
+
+// Start background watcher for logs/network (detached)
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const watcherPath = join(scriptDir, "watch.js");
+spawn(process.execPath, [watcherPath], { detached: true, stdio: "ignore" }).unref();
 
 console.log(
   `✓ Chrome started on :9222${useProfile ? " with your profile" : ""}`,
