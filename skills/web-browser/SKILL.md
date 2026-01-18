@@ -10,58 +10,58 @@ Minimal CDP tools for collaborative site exploration.
 
 ## Start Chrome
 
-\`\`\`bash
+```bash
 ./scripts/start.js              # Fresh profile
 ./scripts/start.js --profile    # Copy your profile (cookies, logins)
-\`\`\`
+```
 
 Start Chrome on `:9222` with remote debugging.
 
 ## Navigate
 
-\`\`\`bash
+```bash
 ./scripts/nav.js https://example.com
 ./scripts/nav.js https://example.com --new
-\`\`\`
+```
 
 Navigate current tab or open new tab.
 
 ## Evaluate JavaScript
 
-\`\`\`bash
+```bash
 ./scripts/eval.js 'document.title'
 ./scripts/eval.js 'document.querySelectorAll("a").length'
 ./scripts/eval.js 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a => ({ text: a.textContent.trim(), href: a.href })).filter(link => !link.href.startsWith("https://")))'
-\`\`\`
+```
 
 Execute JavaScript in active tab (async context).  Be careful with string escaping, best to use single quotes.
 
 ## Screenshot
 
-\`\`\`bash
+```bash
 ./scripts/screenshot.js
-\`\`\`
+```
 
 Screenshot current viewport, returns temp file path
 
 ## Pick Elements
 
-\`\`\`bash
+```bash
 ./scripts/pick.js "Click the submit button"
-\`\`\`
+```
 
 Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, Enter to finish.
 
 ## Dismiss Cookie Dialogs
 
-\`\`\`bash
+```bash
 ./scripts/dismiss-cookies.js          # Accept cookies
 ./scripts/dismiss-cookies.js --reject # Reject cookies (where possible)
-\`\`\`
+```
 
 Automatically dismisses EU cookie consent dialogs.
 
 Run after navigating to a page:
-\`\`\`bash
+```bash
 ./scripts/nav.js https://example.com && ./scripts/dismiss-cookies.js
-\`\`\`
+```
