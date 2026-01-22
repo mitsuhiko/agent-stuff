@@ -1,16 +1,19 @@
 /**
  * Bash Interceptor Extension
  *
- * Intercepts bash tool execution to prepend ~/.pi/interceptors to PATH.
+ * Intercepts bash tool execution to prepend interceptor directories to PATH.
+ * Supports both project-level (.pi/interceptors) and global (~/.pi/interceptors).
+ * Project-level interceptors take priority over global ones.
+ *
  * This enables command interception for tools like python (redirecting to uv run python)
  * and pip (failing with a helpful "use uv" message).
  *
  * Usage:
- *   1. Place wrapper scripts in ~/.pi/interceptors/
+ *   1. Place wrapper scripts in .pi/interceptors/ (project) or ~/.pi/interceptors/ (global)
  *   2. Load this extension with: pi -e ./bash-interceptor.ts
  *
  * Example interceptor scripts:
- *   ~/.pi/interceptors/python  -> #!/bin/bash\nexec uv run python "$@"
+ *   .pi/interceptors/python    -> #!/bin/bash\nexec uv run python "$@"
  *   ~/.pi/interceptors/pip     -> #!/bin/bash\necho "Error: Use 'uv pip' instead of pip" >&2; exit 1
  */
 
@@ -24,17 +27,49 @@ import {
 	createBashTool,
 } from "@mariozechner/pi-coding-agent";
 
-const INTERCEPTORS_DIR = path.join(os.homedir(), ".pi", "interceptors");
+const GLOBAL_INTERCEPTORS_DIR = path.join(os.homedir(), ".pi", "interceptors");
 
-function ensureInterceptorsDir(): void {
-	if (!fs.existsSync(INTERCEPTORS_DIR)) {
-		fs.mkdirSync(INTERCEPTORS_DIR, { recursive: true });
+function getProjectInterceptorsDir(cwd: string): string {
+	return path.join(cwd, ".pi", "interceptors");
+}
+
+function ensureInterceptorsDirs(cwd: string): void {
+	const projectDir = getProjectInterceptorsDir(cwd);
+	if (!fs.existsSync(projectDir)) {
+		fs.mkdirSync(projectDir, { recursive: true });
+	}
+	if (!fs.existsSync(GLOBAL_INTERCEPTORS_DIR)) {
+		fs.mkdirSync(GLOBAL_INTERCEPTORS_DIR, { recursive: true });
 	}
 }
 
-function getModifiedPath(): string {
+function getModifiedPath(cwd: string): string {
 	const currentPath = process.env.PATH || "";
-	return `${INTERCEPTORS_DIR}:${currentPath}`;
+	const projectDir = getProjectInterceptorsDir(cwd);
+	// Project-level takes priority over global
+	return `${projectDir}:${GLOBAL_INTERCEPTORS_DIR}:${currentPath}`;
+}
+
+function getInterceptorFiles(dir: string): string[] {
+	if (!fs.existsSync(dir)) {
+		return [];
+	}
+	return fs.readdirSync(dir).filter((f) => {
+		const filePath = path.join(dir, f);
+		try {
+			const stat = fs.statSync(filePath);
+			return stat.isFile();
+		} catch {
+			return false;
+		}
+	});
+}
+
+function getAllInterceptorFiles(cwd: string): { project: string[]; global: string[] } {
+	return {
+		project: getInterceptorFiles(getProjectInterceptorsDir(cwd)),
+		global: getInterceptorFiles(GLOBAL_INTERCEPTORS_DIR),
+	};
 }
 
 function createInterceptedBashOps(localCwd: string): BashOperations {
@@ -43,7 +78,7 @@ function createInterceptedBashOps(localCwd: string): BashOperations {
 			new Promise((resolve, reject) => {
 				const modifiedEnv = {
 					...process.env,
-					PATH: getModifiedPath(),
+					PATH: getModifiedPath(localCwd),
 				};
 
 				const child = spawn("bash", ["-c", command], {
@@ -85,8 +120,8 @@ function createInterceptedBashOps(localCwd: string): BashOperations {
 export default function bashInterceptor(pi: ExtensionAPI) {
 	const localCwd = process.cwd();
 
-	// Ensure interceptors directory exists
-	ensureInterceptorsDir();
+	// Ensure interceptors directories exist
+	ensureInterceptorsDirs(localCwd);
 
 	// Create the intercepted bash tool
 	const interceptedBashTool = createBashTool(localCwd, {
@@ -103,50 +138,33 @@ export default function bashInterceptor(pi: ExtensionAPI) {
 
 	// Show status on session start
 	pi.on("session_start", async (_event, ctx) => {
-		const interceptorFiles = fs.existsSync(INTERCEPTORS_DIR)
-			? fs.readdirSync(INTERCEPTORS_DIR).filter((f) => {
-					const filePath = path.join(INTERCEPTORS_DIR, f);
-					try {
-						const stat = fs.statSync(filePath);
-						return stat.isFile();
-					} catch {
-						return false;
-					}
-				})
-			: [];
+		const { project, global } = getAllInterceptorFiles(localCwd);
+		const allFiles = [...new Set([...project, ...global])];
 
-		if (interceptorFiles.length > 0) {
+		if (allFiles.length > 0) {
 			ctx.ui.setStatus(
 				"interceptor",
-				ctx.ui.theme.fg("accent", `PATH interceptors: ${interceptorFiles.join(", ")}`)
+				ctx.ui.theme.fg("accent", `PATH interceptors: ${allFiles.join(", ")}`)
 			);
 		}
 
+		const projectDir = getProjectInterceptorsDir(localCwd);
 		ctx.ui.notify(
-			`Bash interceptor active. Interceptors dir: ${INTERCEPTORS_DIR}`,
+			`Bash interceptor active. Dirs: ${projectDir}, ${GLOBAL_INTERCEPTORS_DIR}`,
 			"info"
 		);
 	});
 
 	// Modify system prompt to inform the agent about intercepted commands
 	pi.on("before_agent_start", async (event) => {
-		const interceptorFiles = fs.existsSync(INTERCEPTORS_DIR)
-			? fs.readdirSync(INTERCEPTORS_DIR).filter((f) => {
-					const filePath = path.join(INTERCEPTORS_DIR, f);
-					try {
-						const stat = fs.statSync(filePath);
-						return stat.isFile();
-					} catch {
-						return false;
-					}
-				})
-			: [];
+		const { project, global } = getAllInterceptorFiles(localCwd);
+		const allFiles = [...new Set([...project, ...global])];
 
-		if (interceptorFiles.length === 0) {
+		if (allFiles.length === 0) {
 			return;
 		}
 
-		const interceptorInfo = `\n\nNote: The following commands are intercepted via PATH override: ${interceptorFiles.join(", ")}. These may behave differently than their standard counterparts.`;
+		const interceptorInfo = `\n\nNote: The following commands are intercepted via PATH override: ${allFiles.join(", ")}. These may behave differently than their standard counterparts.`;
 
 		return {
 			systemPrompt: event.systemPrompt + interceptorInfo,
