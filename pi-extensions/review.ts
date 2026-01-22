@@ -91,6 +91,7 @@ Flag issues that:
 4. Prefer predictable production behavior; crashing is better than silent degradation.
 5. Treat back pressure handling as critical to system stability.
 6. Apply system-level thinking; flag changes that increase operational risk or on-call wakeups.
+7. Ensure that errors are always checked against codes or stable identifiers, never error messages.
 
 ## Priority levels
 
