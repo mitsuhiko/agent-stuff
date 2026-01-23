@@ -76,6 +76,7 @@ Guidelines:
 - Comments should be clear and actionable.
 - Use the assisted_review_comment tool ONLY when the human agrees to capture a comment.
 - Use assisted_review_diff to render unified diffs (with GitHub links) when the human asks to inspect changes.
+- After calling assisted_review_diff, do NOT reprint the diff in your own message. Only refer to the tool output and ask follow-up questions.
 `;
 
 const UNCOMMITTED_INSTRUCTIONS =
@@ -745,7 +746,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "assisted_review_diff",
 		label: "Assisted Review Diff",
-		description: "Render a unified diff for assisted review (git, GitHub PR, or provided diff).",
+		description: "Render a unified diff for assisted review (git, GitHub PR, or provided diff). The diff is fully rendered in the tool output; do not reprint it.",
 		parameters: DIFF_PARAMS,
 		async execute(_toolCallId, params) {
 			let diffText = "";
@@ -845,7 +846,9 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 				return new Text("", 0, 0);
 			}
 
-			return new Markdown(text, 0, 0, getMarkdownTheme());
+			const mdTheme = getMarkdownTheme();
+			const diffTheme = { ...mdTheme, codeBlockIndent: "" };
+			return new Markdown(text, 0, 0, diffTheme);
 		},
 	});
 
