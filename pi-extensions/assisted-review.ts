@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, BorderedLoader, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text, Markdown } from "@mariozechner/pi-tui";
+import { Container, type SelectItem, SelectList, Text, Markdown, matchesKey, Key } from "@mariozechner/pi-tui";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
@@ -74,7 +74,8 @@ Guidelines:
 - Be explicit about what you need the human to clarify.
 - Do not attempt to review every line; prioritize impact.
 - Comments should be clear and actionable.
-- Use the assisted_review_comment tool ONLY when the human agrees to capture a comment.
+- You MUST use the assisted_review_comment tool to record any review comments the human agrees to capture. Do not store comments elsewhere.
+- If a potential comment is identified, explicitly ask the human whether to record it, then use assisted_review_comment if they agree.
 - Use assisted_review_diff to render unified diffs (with GitHub links) when the human asks to inspect changes.
 - After calling assisted_review_diff, do NOT reprint the diff in your own message. Only refer to the tool output and ask follow-up questions.
 `;
@@ -1331,6 +1332,150 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 			}
 
 			await executeReview(ctx, target, useFreshSession);
+		},
+	});
+
+	pi.registerCommand("assisted-review-comments", {
+		description: "Review, copy, or insert assisted review comments",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("assisted-review-comments requires interactive mode", "error");
+				return;
+			}
+
+			if (comments.length === 0) {
+				ctx.ui.notify("No assisted review comments captured", "info");
+				return;
+			}
+
+			const showCommentDetail = async (comment: AssistedReviewComment) => {
+				const location = comment.path
+					? `${comment.path}${comment.line !== undefined ? `:${comment.line}` : ""}`
+					: "Summary";
+				const detailMarkdown = `# [${comment.priority}] ${comment.title}\n\n**Location:** ${location}\n\n${comment.body}`;
+
+				await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+					const container = new Container();
+					container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+					container.addChild(new Markdown(detailMarkdown, 1, 0, getMarkdownTheme()));
+					container.addChild(new Text(theme.fg("dim", "Press esc to go back"), 1, 0));
+					container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+					return {
+						render(width: number) {
+							return container.render(width);
+						},
+						invalidate() {
+							container.invalidate();
+						},
+						handleInput(data: string) {
+							if (matchesKey(data, Key.escape)) {
+								done();
+								return;
+							}
+						},
+					};
+				});
+			};
+
+			const reviewComments = async () => {
+				while (true) {
+					const items: SelectItem[] = comments.map((comment) => {
+						const location = comment.path
+							? `${comment.path}:${comment.line ?? "?"}`
+							: "Summary";
+						return {
+							value: String(comment.id),
+							label: `${location}`,
+							description: `[${comment.priority}] ${comment.title}`,
+						};
+					});
+
+					const selectedId = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+						const container = new Container();
+						container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+						container.addChild(new Text(theme.fg("accent", theme.bold("Assisted review comments"))));
+
+						const selectList = new SelectList(items, Math.min(items.length, 12), {
+							selectedPrefix: (text) => theme.fg("accent", text),
+							selectedText: (text) => theme.fg("accent", text),
+							description: (text) => theme.fg("muted", text),
+							scrollInfo: (text) => theme.fg("dim", text),
+							noMatch: (text) => theme.fg("warning", text),
+						});
+
+						selectList.searchable = true;
+						selectList.onSelect = (item) => done(item.value);
+						selectList.onCancel = () => done(null);
+
+						container.addChild(selectList);
+						container.addChild(new Text(theme.fg("dim", "Enter to view • esc to menu")));
+						container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+						return {
+							render(width: number) {
+								return container.render(width);
+							},
+							invalidate() {
+								container.invalidate();
+							},
+							handleInput(data: string) {
+								selectList.handleInput(data);
+								tui.requestRender();
+							},
+						};
+					});
+
+					if (!selectedId) {
+						return;
+					}
+
+					const selectedComment = comments.find((comment) => String(comment.id) === selectedId);
+					if (!selectedComment) {
+						ctx.ui.notify("Comment not found", "error");
+						return;
+					}
+
+					await showCommentDetail(selectedComment);
+				}
+			};
+
+			while (true) {
+				const choice = await ctx.ui.select("Assisted review comments", [
+					"Review comments",
+					"Copy markdown to clipboard",
+					"Insert markdown into editor",
+				]);
+
+				if (choice === undefined) {
+					return;
+				}
+
+				if (choice === "Review comments") {
+					await reviewComments();
+					continue;
+				}
+
+				if (choice === "Copy markdown to clipboard") {
+					const markdown = formatMarkdown(comments);
+					const { code, stderr } = await pi.exec("bash", [
+						"-lc",
+						`cat <<'EOF' | pbcopy\n${markdown}\nEOF`,
+						]);
+					if (code !== 0) {
+						ctx.ui.notify(`Failed to copy to clipboard${stderr ? `: ${stderr.trim()}` : ""}`, "error");
+						return;
+					}
+					ctx.ui.notify("Comments copied to clipboard", "info");
+					return;
+				}
+
+				if (choice === "Insert markdown into editor") {
+					ctx.ui.setEditorText(formatMarkdown(comments));
+					ctx.ui.notify("Comments inserted into editor", "info");
+					return;
+				}
+			}
 		},
 	});
 
