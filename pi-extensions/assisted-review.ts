@@ -44,10 +44,15 @@ interface AssistedReviewComment {
 }
 
 interface AssistedReviewDetails {
-	action: "list" | "add" | "clear";
+	action: "list" | "add" | "clear" | "update" | "delete";
 	comments: AssistedReviewComment[];
 	nextId: number;
 	error?: string;
+}
+
+interface CommentsState {
+	comments: AssistedReviewComment[];
+	nextId: number;
 }
 
 let comments: AssistedReviewComment[] = [];
@@ -76,7 +81,7 @@ Guidelines:
 - Comments should be clear and actionable.
 - You MUST use the assisted_review_comment tool to record any review comments the human agrees to capture. Do not store comments elsewhere.
 - If a potential comment is identified, explicitly ask the human whether to record it, then use assisted_review_comment if they agree.
-- Use assisted_review_diff to render unified diffs (with GitHub links) when the human asks to inspect changes.
+- Use assisted_review_diff to render unified diffs (with GitHub links) when the human asks to inspect changes. Prefer paths, grep, grepContext, and lineRange to keep output small.
 - After calling assisted_review_diff, do NOT reprint the diff in your own message. Only refer to the tool output and ask follow-up questions.
 `;
 
@@ -106,7 +111,8 @@ const REVIEW_PRESETS = [
 ] as const;
 
 const COMMENT_PARAMS = Type.Object({
-	action: StringEnum(["list", "add", "clear"] as const),
+	action: StringEnum(["list", "add", "clear", "update", "delete"] as const),
+	id: Type.Optional(Type.Number({ description: "Comment id for update/delete" })),
 	title: Type.Optional(Type.String({ description: "Short summary for the comment" })),
 	body: Type.Optional(Type.String({ description: "Detailed comment body" })),
 	priority: Type.Optional(StringEnum(["P0", "P1", "P2", "P3"] as const)),
@@ -123,6 +129,8 @@ const DIFF_PARAMS = Type.Object({
 	pr: Type.Optional(Type.String({ description: "PR number or URL when source=pr" })),
 	paths: Type.Optional(Type.Array(Type.String(), { description: "Optional file filters" })),
 	grep: Type.Optional(Type.String({ description: "Regex to filter hunks" })),
+	grepContext: Type.Optional(Type.Number({ description: "Lines of context around grep matches" })),
+	lineRange: Type.Optional(Type.String({ description: "Line range for new file content, e.g. '120-200'" })),
 	context: Type.Optional(Type.Number({ description: "Context lines for git diff" })),
 });
 
@@ -426,7 +434,7 @@ function parseUnifiedDiff(diff: string): DiffFile[] {
 
 function filterDiffFiles(
 	files: DiffFile[],
-	options: { paths?: string[]; grep?: string },
+	options: { paths?: string[]; grep?: string; grepContext?: number; lineRange?: { start: number; end: number } },
 ): DiffFile[] {
 	let filtered = files;
 	if (options.paths?.length) {
@@ -436,14 +444,86 @@ function filterDiffFiles(
 	}
 
 	const grep = compileGrep(options.grep);
-	if (!grep) return filtered;
+	const grepContext = options.grepContext ?? 0;
+	const lineRange = options.lineRange;
 
-	return filtered
+	const sliceByRange = (hunk: DiffHunk) => {
+		if (!lineRange) return hunk;
+		let oldLine = hunk.oldStart;
+		let newLine = hunk.newStart;
+		const collected: string[] = [];
+		let hasAny = false;
+
+		for (const line of hunk.lines) {
+			if (line.startsWith("@@")) {
+				collected.push(line);
+				continue;
+			}
+
+			const isAdded = line.startsWith("+") && !line.startsWith("+++");
+			const isRemoved = line.startsWith("-") && !line.startsWith("---");
+			const isContext = line.startsWith(" ");
+
+			if (isAdded) {
+				if (newLine >= lineRange.start && newLine <= lineRange.end) {
+					collected.push(line);
+					hasAny = true;
+				}
+				newLine += 1;
+				continue;
+			}
+
+			if (isRemoved) {
+				oldLine += 1;
+				continue;
+			}
+
+			if (isContext) {
+				if (newLine >= lineRange.start && newLine <= lineRange.end) {
+					collected.push(line);
+					hasAny = true;
+				}
+				oldLine += 1;
+				newLine += 1;
+			}
+		}
+
+		if (!hasAny) return null;
+		return { ...hunk, lines: collected };
+	};
+
+	const applyGrep = (hunk: DiffHunk) => {
+		if (!grep) return hunk;
+		const matchLines = hunk.lines.map((line, index) => (grep.test(line) ? index : -1)).filter((i) => i >= 0);
+		if (matchLines.length === 0) return null;
+		if (grepContext <= 0) return hunk;
+
+		const keep = new Set<number>();
+		for (const idx of matchLines) {
+			for (let i = Math.max(0, idx - grepContext); i <= Math.min(hunk.lines.length - 1, idx + grepContext); i++) {
+				keep.add(i);
+			}
+		}
+
+		const lines = hunk.lines.filter((_line, index) => keep.has(index) || index === 0);
+		return { ...hunk, lines };
+	};
+
+	const filteredFiles = filtered
 		.map((file) => {
-			const hunks = file.hunks.filter((hunk) => hunk.lines.some((line) => grep.test(line)));
+			const hunks = file.hunks
+				.map((hunk) => {
+					const ranged = sliceByRange(hunk);
+					if (!ranged) return null;
+					return applyGrep(ranged);
+				})
+				.filter((hunk): hunk is DiffHunk => Boolean(hunk));
 			return { ...file, hunks };
 		})
-		.filter((file) => file.hunks.length > 0);
+		.filter((file) => file.hunks.length > 0 || file.headerLines.length > 0);
+
+	if (!grep) return filteredFiles;
+	return filteredFiles.filter((file) => file.hunks.length > 0);
 }
 
 function diffAnchor(path: string): string {
@@ -491,34 +571,152 @@ function buildGithubLink(prUrl: string, path: string, line?: number, side: "R" |
 	return `${base}/changes#${anchor}`;
 }
 
-function formatDiffOutput(files: DiffFile[], prUrl?: string): string {
+function isNewFileDiff(file: DiffFile): boolean {
+	return file.headerLines.some((line) => line.startsWith("--- /dev/null") || line.startsWith("new file mode"));
+}
+
+function computeFileLineRanges(file: DiffFile, chunkSize: number): string[] {
+	let minLine: number | null = null;
+	let maxLine: number | null = null;
+
+	for (const hunk of file.hunks) {
+		let newLine = hunk.newStart;
+		for (const line of hunk.lines) {
+			if (line.startsWith("@@")) continue;
+			if (line.startsWith("+") && !line.startsWith("+++")) {
+				if (minLine === null) minLine = newLine;
+				maxLine = newLine;
+				newLine += 1;
+				continue;
+			}
+			if (line.startsWith(" ")) {
+				if (minLine === null) minLine = newLine;
+				maxLine = newLine;
+				newLine += 1;
+			}
+		}
+	}
+
+	if (minLine === null || maxLine === null) return [];
+	const ranges: string[] = [];
+	for (let start = minLine; start <= maxLine; start += chunkSize) {
+		const end = Math.min(maxLine, start + chunkSize - 1);
+		ranges.push(`${start}-${end}`);
+	}
+	return ranges;
+}
+
+function formatDiffOutput(
+	files: DiffFile[],
+	options: { prUrl?: string; maxLines: number; maxHunks: number },
+): {
+	text: string;
+	info: {
+		shownFiles: number;
+		shownHunks: number;
+		shownLines: number;
+		truncated: boolean;
+		suggestedRanges: Record<string, string[]>;
+	};
+} {
 	if (files.length === 0) {
-		return "No diff output (filters removed all hunks).";
+		return {
+			text: "No diff output (filters removed all hunks).",
+			info: { shownFiles: 0, shownHunks: 0, shownLines: 0, truncated: false, suggestedRanges: {} },
+		};
 	}
 
 	const blocks: string[] = [];
+	let shownHunks = 0;
+	let shownFiles = 0;
+	let shownLines = 0;
+	let truncated = false;
+	const suggestedRanges: Record<string, string[]> = {};
+
+	const addBlock = (text: string) => {
+		const lines = text.split("\n").length;
+		shownLines += lines;
+		blocks.push(text);
+	};
 
 	for (const file of files) {
+		if (shownHunks >= options.maxHunks || shownLines >= options.maxLines) {
+			truncated = true;
+			break;
+		}
+
+		let fileShown = false;
+
 		if (file.hunks.length === 0) {
 			const diffText = [...file.headerLines].join("\n");
-			blocks.push(`### ${file.path}\n\n\`\`\`diff\n${diffText}\n\`\`\``);
-			if (prUrl) {
-				blocks.push(`GitHub: ${buildGithubLink(prUrl, file.path)}`);
+			const block = `### ${file.path}\n\n\`\`\`diff\n${diffText}\n\`\`\``;
+			addBlock(block);
+			fileShown = true;
+			if (options.prUrl) {
+				addBlock(`GitHub: ${buildGithubLink(options.prUrl, file.path)}`);
 			}
+			shownFiles += 1;
 			continue;
 		}
 
 		for (const hunk of file.hunks) {
-			const diffText = [...file.headerLines, ...hunk.lines].join("\n");
-			blocks.push(`### ${file.path} (hunk +${hunk.newStart})\n\n\`\`\`diff\n${diffText}\n\`\`\``);
-			if (prUrl) {
-				const target = hunkLinkTarget(hunk);
-				blocks.push(`GitHub: ${buildGithubLink(prUrl, file.path, target.line, target.side)}`);
+			if (shownHunks >= options.maxHunks || shownLines >= options.maxLines) {
+				truncated = true;
+				break;
 			}
+
+			const remainingLines = options.maxLines - shownLines;
+			const fullLines = [...file.headerLines, ...hunk.lines];
+			let linesToRender = fullLines;
+			let hunkTruncated = false;
+
+			if (fullLines.length > remainingLines) {
+				linesToRender = fullLines.slice(0, Math.max(0, remainingLines - 1));
+				hunkTruncated = true;
+				truncated = true;
+			}
+
+			const diffText = linesToRender.join("\n");
+			let block = `### ${file.path} (hunk +${hunk.newStart})\n\n\`\`\`diff\n${diffText}\n`;
+			if (hunkTruncated) {
+				block += "... (truncated)\n";
+			}
+			block += "\`\`\`";
+			addBlock(block);
+			fileShown = true;
+			shownHunks += 1;
+
+			if (options.prUrl) {
+				const target = hunkLinkTarget(hunk);
+				addBlock(`GitHub: ${buildGithubLink(options.prUrl, file.path, target.line, target.side)}`);
+			}
+		}
+
+		if (truncated && isNewFileDiff(file)) {
+			suggestedRanges[file.path] = computeFileLineRanges(file, options.maxLines);
+		}
+
+		if (fileShown) {
+			shownFiles += 1;
 		}
 	}
 
-	return blocks.join("\n\n");
+	if (truncated) {
+		let note = "---\nDiff output truncated. Re-run with paths/grep/grepContext/lineRange/context to narrow the view or request another slice.";
+		const rangeHints = Object.entries(suggestedRanges)
+			.filter(([, ranges]) => ranges.length > 0)
+			.map(([path, ranges]) => `${path}: ${ranges.join(", ")}`)
+			.join("\n");
+		if (rangeHints) {
+			note += `\nSuggested lineRange values:\n${rangeHints}`;
+		}
+		blocks.push(note);
+	}
+
+	return {
+		text: blocks.join("\n\n"),
+		info: { shownFiles, shownHunks, shownLines, truncated, suggestedRanges },
+	};
 }
 
 async function postGithubComments(
@@ -595,6 +793,13 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 		});
 	};
 
+	const persistCommentsState = () => {
+		pi.appendEntry<CommentsState>("assisted-review-comments", {
+			comments: [...comments],
+			nextId: nextCommentId,
+		});
+	};
+
 	const reconstructState = (ctx: ExtensionContext, restoreUI = true) => {
 		comments = [];
 		nextCommentId = 1;
@@ -624,6 +829,14 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					reviewOriginId = data.originId;
 					previousActiveTools = data.previousTools ?? null;
 					activePrRef = data.prRef ?? null;
+				}
+			}
+
+			if (entry.type === "custom" && entry.customType === "assisted-review-comments") {
+				const data = entry.data as CommentsState | undefined;
+				if (data) {
+					comments = data.comments;
+					nextCommentId = data.nextId;
 				}
 			}
 		}
@@ -661,7 +874,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "assisted_review_comment",
 		label: "Assisted Review Comment",
-		description: "Capture review comments during assisted review. Actions: list, add, clear.",
+		description: "Capture review comments during assisted review. Actions: list, add, update, delete, clear.",
 		parameters: COMMENT_PARAMS,
 		async execute(_toolCallId, params) {
 			switch (params.action) {
@@ -720,6 +933,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 						side: params.side,
 					};
 					comments.push(newComment);
+					persistCommentsState();
 					return {
 						content: [
 							{
@@ -731,10 +945,143 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					};
 				}
 
+				case "update": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: id is required for update" }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "id required",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					const index = comments.findIndex((comment) => comment.id === params.id);
+					if (index === -1) {
+						return {
+							content: [{ type: "text", text: `Error: comment #${params.id} not found` }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "comment not found",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					const current = comments[index];
+					const next: AssistedReviewComment = { ...current };
+					let changed = false;
+
+					if (params.title !== undefined) {
+						next.title = params.title;
+						changed = true;
+					}
+					if (params.body !== undefined) {
+						next.body = params.body;
+						changed = true;
+					}
+					if (params.priority !== undefined) {
+						next.priority = params.priority;
+						changed = true;
+					}
+					if (params.path !== undefined) {
+						if (params.path.trim() === "") {
+							next.path = undefined;
+							next.line = undefined;
+							next.side = undefined;
+						} else {
+							next.path = params.path;
+						}
+						changed = true;
+					}
+					if (params.line !== undefined) {
+						if (params.line <= 0) {
+							next.line = undefined;
+							if (!next.path) next.side = undefined;
+						} else {
+							next.line = params.line;
+						}
+						changed = true;
+					}
+					if (params.side !== undefined) {
+						next.side = params.side;
+						changed = true;
+					}
+
+					if (!changed) {
+						return {
+							content: [{ type: "text", text: "Error: no fields provided to update" }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "no changes",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					if (next.line !== undefined && !next.path) {
+						return {
+							content: [{ type: "text", text: "Error: path is required when line is provided" }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "path required for line",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					comments[index] = next;
+					persistCommentsState();
+					return {
+						content: [{ type: "text", text: `Updated comment #${next.id}` }],
+						details: { action: "update", comments: [...comments], nextId: nextCommentId } as AssistedReviewDetails,
+					};
+				}
+
+				case "delete": {
+					if (params.id === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: id is required for delete" }],
+							details: {
+								action: "delete",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "id required",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					const index = comments.findIndex((comment) => comment.id === params.id);
+					if (index === -1) {
+						return {
+							content: [{ type: "text", text: `Error: comment #${params.id} not found` }],
+							details: {
+								action: "delete",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "comment not found",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					const removed = comments.splice(index, 1)[0];
+					persistCommentsState();
+					return {
+						content: [{ type: "text", text: `Deleted comment #${removed.id}` }],
+						details: { action: "delete", comments: [...comments], nextId: nextCommentId } as AssistedReviewDetails,
+					};
+				}
+
 				case "clear": {
 					const count = comments.length;
 					comments = [];
 					nextCommentId = 1;
+					persistCommentsState();
 					return {
 						content: [{ type: "text", text: `Cleared ${count} comments` }],
 						details: { action: "clear", comments: [], nextId: 1 } as AssistedReviewDetails,
@@ -822,14 +1169,32 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 			}
 
 			const files = parseUnifiedDiff(diffText);
-			const filtered = filterDiffFiles(files, { paths: params.paths, grep: params.grep });
-			const rendered = formatDiffOutput(filtered, prUrl);
+			const rangeMatch = params.lineRange?.match(/^(\d+)\s*-\s*(\d+)$/);
+			const lineRange = rangeMatch
+				? { start: Number(rangeMatch[1]), end: Number(rangeMatch[2]) }
+				: undefined;
+			const filtered = filterDiffFiles(files, {
+				paths: params.paths,
+				grep: params.grep,
+				grepContext: params.grep ? params.grepContext ?? 3 : params.grepContext,
+				lineRange,
+			});
+			const maxLines = params.context && params.context > 0 ? Math.max(50, params.context * 20) : 150;
+			const maxHunks = 8;
+			const rendered = formatDiffOutput(filtered, { prUrl, maxLines, maxHunks });
 
 			return {
-				content: [{ type: "text", text: rendered }],
+				content: [{ type: "text", text: rendered.text }],
 				details: {
 					files: filtered.length,
 					hunks: filtered.reduce((acc, file) => acc + file.hunks.length, 0),
+					shownFiles: rendered.info.shownFiles,
+					shownHunks: rendered.info.shownHunks,
+					shownLines: rendered.info.shownLines,
+					truncated: rendered.info.truncated,
+					suggestedRanges: rendered.info.suggestedRanges,
+					maxLines,
+					maxHunks,
 				},
 			};
 		},
@@ -1378,6 +1743,100 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 				});
 			};
 
+			const editComment = async (comment: AssistedReviewComment): Promise<boolean> => {
+				const newTitle = await ctx.ui.input("Title (blank keeps current)", comment.title);
+				if (newTitle === undefined) return false;
+				const title = newTitle.trim() ? newTitle.trim() : comment.title;
+
+				const priorityChoice = await ctx.ui.select("Priority", [
+					`Keep (${comment.priority})`,
+					"P0",
+					"P1",
+					"P2",
+					"P3",
+				]);
+				if (priorityChoice === undefined) return false;
+				const priority = priorityChoice.startsWith("Keep") ? comment.priority : (priorityChoice as AssistedReviewComment["priority"]);
+
+				const pathInput = await ctx.ui.input(
+					"Path (blank keeps, '-' clears)",
+					comment.path ?? "",
+				);
+				if (pathInput === undefined) return false;
+
+				let path: string | undefined = comment.path;
+				let line: number | undefined = comment.line;
+				let side: AssistedReviewComment["side"] | undefined = comment.side;
+
+				const pathTrimmed = pathInput.trim();
+				if (pathTrimmed) {
+					if (pathTrimmed === "-") {
+						path = undefined;
+						line = undefined;
+						side = undefined;
+					} else {
+						path = pathTrimmed;
+					}
+				}
+
+				if (path) {
+					const lineInput = await ctx.ui.input(
+						"Line (blank keeps, '-' clears)",
+						line !== undefined ? String(line) : "",
+					);
+					if (lineInput === undefined) return false;
+					const lineTrimmed = lineInput.trim();
+					if (lineTrimmed) {
+						if (lineTrimmed === "-") {
+							line = undefined;
+							side = undefined;
+						} else {
+							const parsed = Number(lineTrimmed);
+							if (!Number.isFinite(parsed) || parsed <= 0) {
+								ctx.ui.notify("Invalid line number", "error");
+								return false;
+							}
+							line = parsed;
+						}
+					}
+
+					if (line !== undefined) {
+						const sideChoice = await ctx.ui.select("Side", [
+							`Keep (${side ?? "RIGHT"})`,
+							"RIGHT",
+							"LEFT",
+						]);
+						if (sideChoice === undefined) return false;
+						if (!sideChoice.startsWith("Keep")) {
+							side = sideChoice as AssistedReviewComment["side"];
+						}
+					}
+				}
+
+				const bodyInput = await ctx.ui.editor("Comment body", comment.body);
+				if (bodyInput === undefined) return false;
+				const body = bodyInput.trim() ? bodyInput : comment.body;
+
+				const index = comments.findIndex((c) => c.id === comment.id);
+				if (index === -1) {
+					ctx.ui.notify("Comment not found", "error");
+					return false;
+				}
+
+				comments[index] = {
+					...comment,
+					title,
+					priority,
+					body,
+					path,
+					line,
+					side,
+				};
+				persistCommentsState();
+				ctx.ui.notify(`Updated comment #${comment.id}`, "info");
+				return true;
+			};
+
 			const reviewComments = async () => {
 				while (true) {
 					const items: SelectItem[] = comments.map((comment) => {
@@ -1430,13 +1889,54 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 						return;
 					}
 
-					const selectedComment = comments.find((comment) => String(comment.id) === selectedId);
+					let selectedComment = comments.find((comment) => String(comment.id) === selectedId);
 					if (!selectedComment) {
 						ctx.ui.notify("Comment not found", "error");
 						return;
 					}
 
-					await showCommentDetail(selectedComment);
+					while (true) {
+						const action = await ctx.ui.select(`Comment #${selectedComment.id}`, ["View", "Edit", "Delete", "Back"]);
+						if (action === undefined || action === "Back") {
+							break;
+						}
+
+						if (action === "View") {
+							await showCommentDetail(selectedComment);
+							continue;
+						}
+
+						if (action === "Edit") {
+							const updated = await editComment(selectedComment);
+							if (updated) {
+								const refreshed = comments.find((comment) => comment.id === selectedComment.id);
+								if (!refreshed) {
+									break;
+								}
+								selectedComment = refreshed;
+							}
+							continue;
+						}
+
+						if (action === "Delete") {
+							const confirm = await ctx.ui.confirm(
+								"Delete comment",
+								`Delete comment #${selectedComment.id}?`,
+							);
+							if (!confirm) {
+								continue;
+							}
+							const index = comments.findIndex((comment) => comment.id === selectedComment.id);
+							if (index === -1) {
+								ctx.ui.notify("Comment not found", "error");
+								break;
+							}
+							comments.splice(index, 1);
+							persistCommentsState();
+							ctx.ui.notify(`Deleted comment #${selectedComment.id}`, "info");
+							break;
+						}
+					}
 				}
 			};
 
