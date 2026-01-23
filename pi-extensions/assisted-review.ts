@@ -1,0 +1,1370 @@
+/**
+ * Assisted Review Extension
+ *
+ * Provides a `/assisted-review` command for a collaborative human + AI review flow.
+ * The AI skims the diff and then guides the human through a structured review,
+ * collecting comment candidates along the way.
+ *
+ * Supports targets:
+ * - uncommitted changes
+ * - base branch diff
+ * - specific commit
+ * - GitHub PR (URL or number)
+ * - custom instructions
+ */
+
+import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, BorderedLoader, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { Container, type SelectItem, SelectList, Text, Markdown } from "@mariozechner/pi-tui";
+import { StringEnum } from "@mariozechner/pi-ai";
+import { Type } from "@sinclair/typebox";
+import { createHash } from "node:crypto";
+
+let reviewOriginId: string | undefined;
+let reviewActive = false;
+let previousActiveTools: string[] | null = null;
+let activePrRef: string | null = null;
+
+// State persisted to session for reload survival
+interface ReviewModeState {
+	active: boolean;
+	originId?: string;
+	previousTools?: string[];
+	prRef?: string;
+}
+
+interface AssistedReviewComment {
+	id: number;
+	title: string;
+	body: string;
+	priority: "P0" | "P1" | "P2" | "P3";
+	path?: string;
+	line?: number;
+	side?: "RIGHT" | "LEFT";
+}
+
+interface AssistedReviewDetails {
+	action: "list" | "add" | "clear";
+	comments: AssistedReviewComment[];
+	nextId: number;
+	error?: string;
+}
+
+let comments: AssistedReviewComment[] = [];
+let nextCommentId = 1;
+
+type AssistedReviewTarget =
+	| { type: "uncommitted" }
+	| { type: "baseBranch"; branch: string }
+	| { type: "commit"; sha: string; title?: string }
+	| { type: "pr"; ref: string }
+	| { type: "custom"; instructions: string };
+
+const ASSISTED_REVIEW_PROMPT = `You are the AI partner in an assisted code review. This is a collaborative review between a human and the AI.
+
+Process:
+1. Skim the diff to understand the change at a high level (do NOT perform a full review yet).
+2. Summarize the intent and major areas touched in 3-5 bullets.
+3. Propose a short review plan (3-6 focus areas) and ask the human which to focus on first.
+4. Drive a back-and-forth review: ask clarifying questions, wait for the human's answers, and only then drill down.
+5. When the human agrees that a finding should be recorded, add it via the assisted_review_comment tool.
+
+Guidelines:
+- Start from architecture and system-level concerns, then move to the most important sections.
+- Be explicit about what you need the human to clarify.
+- Do not attempt to review every line; prioritize impact.
+- Comments should be clear and actionable.
+- Use the assisted_review_comment tool ONLY when the human agrees to capture a comment.
+- Use assisted_review_diff to render unified diffs (with GitHub links) when the human asks to inspect changes.
+`;
+
+const UNCOMMITTED_INSTRUCTIONS =
+	"Skim the current working tree changes (staged, unstaged, and untracked). Use git status and git diff to understand what changed.";
+
+const BASE_BRANCH_INSTRUCTIONS_WITH_MERGE_BASE =
+	"Skim the changes against base branch '{baseBranch}'. The merge base is {mergeBaseSha}. Use `git diff {mergeBaseSha}` to inspect changes.";
+
+const BASE_BRANCH_INSTRUCTIONS_FALLBACK =
+	"Skim the changes against base branch '{branch}'. Find the merge base between HEAD and {branch} (or its upstream), then run `git diff` against that SHA.";
+
+const COMMIT_INSTRUCTIONS_WITH_TITLE =
+	"Skim the changes introduced by commit {sha} (\"{title}\"). Use `git show {sha}` to view the diff.";
+
+const COMMIT_INSTRUCTIONS = "Skim the changes introduced by commit {sha}. Use `git show {sha}` to view the diff.";
+
+const PR_INSTRUCTIONS =
+	"Skim the GitHub pull request {ref}. Use `gh pr view {ref}` to see context, then `gh pr diff {ref}` to inspect the diff.";
+
+const REVIEW_PRESETS = [
+	{ value: "baseBranch", label: "Review against a base branch", description: "(PR style)" },
+	{ value: "uncommitted", label: "Review uncommitted changes", description: "" },
+	{ value: "commit", label: "Review a commit", description: "" },
+	{ value: "pr", label: "Review a GitHub PR", description: "" },
+	{ value: "custom", label: "Custom review instructions", description: "" },
+] as const;
+
+const COMMENT_PARAMS = Type.Object({
+	action: StringEnum(["list", "add", "clear"] as const),
+	title: Type.Optional(Type.String({ description: "Short summary for the comment" })),
+	body: Type.Optional(Type.String({ description: "Detailed comment body" })),
+	priority: Type.Optional(StringEnum(["P0", "P1", "P2", "P3"] as const)),
+	path: Type.Optional(Type.String({ description: "File path for inline comment" })),
+	line: Type.Optional(Type.Number({ description: "Line number for inline comment" })),
+	side: Type.Optional(StringEnum(["RIGHT", "LEFT"] as const)),
+});
+
+const DIFF_PARAMS = Type.Object({
+	source: StringEnum(["git", "pr", "diff"] as const),
+	diff: Type.Optional(Type.String({ description: "Unified diff input when source=diff" })),
+	base: Type.Optional(Type.String({ description: "Base ref for git diff" })),
+	head: Type.Optional(Type.String({ description: "Head ref for git diff" })),
+	pr: Type.Optional(Type.String({ description: "PR number or URL when source=pr" })),
+	paths: Type.Optional(Type.Array(Type.String(), { description: "Optional file filters" })),
+	grep: Type.Optional(Type.String({ description: "Regex to filter hunks" })),
+	context: Type.Optional(Type.Number({ description: "Context lines for git diff" })),
+});
+
+interface DiffHunk {
+	header: string;
+	lines: string[];
+	oldStart: number;
+	newStart: number;
+}
+
+interface DiffFile {
+	path: string;
+	headerLines: string[];
+	hunks: DiffHunk[];
+}
+
+interface PrInfo {
+	owner: string;
+	repo: string;
+	number: number;
+	headSha: string;
+	url: string;
+}
+
+function parsePrUrl(url: string): { owner: string; repo: string; number: number } | null {
+	try {
+		const parsed = new URL(url);
+		if (parsed.hostname !== "github.com") return null;
+		const parts = parsed.pathname.split("/").filter(Boolean);
+		if (parts.length < 4) return null;
+		if (parts[2] !== "pull") return null;
+		const number = Number(parts[3]);
+		if (!Number.isFinite(number)) return null;
+		return { owner: parts[0], repo: parts[1], number };
+	} catch {
+		return null;
+	}
+}
+
+async function getMergeBase(pi: ExtensionAPI, branch: string): Promise<string | null> {
+	try {
+		const { stdout: upstream, code: upstreamCode } = await pi.exec("git", [
+			"rev-parse",
+			"--abbrev-ref",
+			`${branch}@{upstream}`,
+		]);
+
+		if (upstreamCode === 0 && upstream.trim()) {
+			const { stdout: mergeBase, code } = await pi.exec("git", ["merge-base", "HEAD", upstream.trim()]);
+			if (code === 0 && mergeBase.trim()) {
+				return mergeBase.trim();
+			}
+		}
+
+		const { stdout: mergeBase, code } = await pi.exec("git", ["merge-base", "HEAD", branch]);
+		if (code === 0 && mergeBase.trim()) {
+			return mergeBase.trim();
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+async function getLocalBranches(pi: ExtensionAPI): Promise<string[]> {
+	const { stdout, code } = await pi.exec("git", ["branch", "--format=%(refname:short)"]);
+	if (code !== 0) return [];
+	return stdout
+		.trim()
+		.split("\n")
+		.filter((b) => b.trim());
+}
+
+async function getRecentCommits(pi: ExtensionAPI, limit: number = 10): Promise<Array<{ sha: string; title: string }>> {
+	const { stdout, code } = await pi.exec("git", ["log", "--oneline", "-n", `${limit}`]);
+	if (code !== 0) return [];
+
+	return stdout
+		.trim()
+		.split("\n")
+		.filter((line) => line.trim())
+		.map((line) => {
+			const [sha, ...rest] = line.trim().split(" ");
+			return { sha, title: rest.join(" ") };
+		});
+}
+
+async function hasUncommittedChanges(pi: ExtensionAPI): Promise<boolean> {
+	const { stdout, code } = await pi.exec("git", ["status", "--porcelain"]);
+	return code === 0 && stdout.trim().length > 0;
+}
+
+async function getCurrentBranch(pi: ExtensionAPI): Promise<string | null> {
+	const { stdout, code } = await pi.exec("git", ["branch", "--show-current"]);
+	if (code === 0 && stdout.trim()) {
+		return stdout.trim();
+	}
+	return null;
+}
+
+async function getDefaultBranch(pi: ExtensionAPI): Promise<string> {
+	const { stdout, code } = await pi.exec("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"]);
+	if (code === 0 && stdout.trim()) {
+		return stdout.trim().replace("origin/", "");
+	}
+
+	const branches = await getLocalBranches(pi);
+	if (branches.includes("main")) return "main";
+	if (branches.includes("master")) return "master";
+
+	return "main";
+}
+
+async function buildAssistedPrompt(pi: ExtensionAPI, target: AssistedReviewTarget): Promise<string> {
+	switch (target.type) {
+		case "uncommitted":
+			return `${ASSISTED_REVIEW_PROMPT}\n\n${UNCOMMITTED_INSTRUCTIONS}`;
+		case "baseBranch": {
+			const mergeBase = await getMergeBase(pi, target.branch);
+			if (mergeBase) {
+				return `${ASSISTED_REVIEW_PROMPT}\n\n${BASE_BRANCH_INSTRUCTIONS_WITH_MERGE_BASE.replace(
+					/{baseBranch}/g,
+					target.branch,
+				).replace(/{mergeBaseSha}/g, mergeBase)}`;
+			}
+			return `${ASSISTED_REVIEW_PROMPT}\n\n${BASE_BRANCH_INSTRUCTIONS_FALLBACK.replace(/{branch}/g, target.branch)}`;
+		}
+		case "commit": {
+			const base = target.title ? COMMIT_INSTRUCTIONS_WITH_TITLE : COMMIT_INSTRUCTIONS;
+			return `${ASSISTED_REVIEW_PROMPT}\n\n${base}`
+				.replace(/{sha}/g, target.sha)
+				.replace(/{title}/g, target.title ?? "");
+		}
+		case "pr":
+			return `${ASSISTED_REVIEW_PROMPT}\n\n${PR_INSTRUCTIONS.replace(/{ref}/g, target.ref)}`;
+		case "custom":
+			return `${ASSISTED_REVIEW_PROMPT}\n\n${target.instructions}`;
+	}
+}
+
+function getUserFacingHint(target: AssistedReviewTarget): string {
+	switch (target.type) {
+		case "uncommitted":
+			return "current changes";
+		case "baseBranch":
+			return `changes against '${target.branch}'`;
+		case "commit": {
+			const shortSha = target.sha.slice(0, 7);
+			return target.title ? `commit ${shortSha}: ${target.title}` : `commit ${shortSha}`;
+		}
+		case "pr":
+			return `PR ${target.ref}`;
+		case "custom":
+			return target.instructions.length > 40 ? target.instructions.slice(0, 37) + "..." : target.instructions;
+	}
+}
+
+function formatMarkdown(commentsToFormat: AssistedReviewComment[]): string {
+	if (commentsToFormat.length === 0) {
+		return "# Assisted Review\n\nNo comments captured.";
+	}
+
+	const summary = commentsToFormat.filter((c) => !c.path || c.line === undefined);
+	const inline = commentsToFormat.filter((c) => c.path && c.line !== undefined);
+
+	let output = "# Assisted Review\n\n";
+
+	if (summary.length > 0) {
+		output += "## Summary Comments\n\n";
+		for (const comment of summary) {
+			output += `- **[${comment.priority}] ${comment.title}**\n\n  ${comment.body.replace(/\n/g, "\n  ")}\n\n`;
+		}
+	}
+
+	if (inline.length > 0) {
+		output += "## Inline Comments\n\n";
+		for (const comment of inline) {
+			output += `- **[${comment.priority}] ${comment.title}** (${comment.path}:${comment.line})\n\n  ${comment.body.replace(/\n/g, "\n  ")}\n\n`;
+		}
+	}
+
+	return output.trimEnd();
+}
+
+async function ensureGhAvailable(pi: ExtensionAPI): Promise<boolean> {
+	const { code } = await pi.exec("gh", ["--version"]);
+	return code === 0;
+}
+
+async function getRepoFromGh(pi: ExtensionAPI): Promise<{ owner: string; repo: string } | null> {
+	const { stdout, code } = await pi.exec("gh", ["repo", "view", "--json", "owner,name"]);
+	if (code !== 0 || !stdout.trim()) return null;
+	try {
+		const data = JSON.parse(stdout);
+		if (!data?.owner?.login || !data?.name) return null;
+		return { owner: data.owner.login, repo: data.name };
+	} catch {
+		return null;
+	}
+}
+
+async function resolvePrInfo(pi: ExtensionAPI, prRef: string): Promise<PrInfo | null> {
+	let owner: string | null = null;
+	let repo: string | null = null;
+	let number: number | null = null;
+
+	const parsed = parsePrUrl(prRef);
+	if (parsed) {
+		owner = parsed.owner;
+		repo = parsed.repo;
+		number = parsed.number;
+	} else if (/^\d+$/.test(prRef)) {
+		const repoInfo = await getRepoFromGh(pi);
+		if (!repoInfo) return null;
+		owner = repoInfo.owner;
+		repo = repoInfo.repo;
+		number = Number(prRef);
+	}
+
+	if (!owner || !repo || !number) return null;
+
+	const { stdout, code } = await pi.exec("gh", [
+		"pr",
+		"view",
+		String(number),
+		"--repo",
+		`${owner}/${repo}`,
+		"--json",
+		"number,headRefOid,url",
+	]);
+
+	if (code !== 0 || !stdout.trim()) return null;
+	try {
+		const data = JSON.parse(stdout);
+		if (!data?.headRefOid || !data?.number || !data?.url) return null;
+		return {
+			owner,
+			repo,
+			number: Number(data.number),
+			headSha: data.headRefOid,
+			url: data.url,
+		};
+	} catch {
+		return null;
+	}
+}
+
+function compileGrep(pattern?: string): RegExp | null {
+	if (!pattern) return null;
+	try {
+		return new RegExp(pattern);
+	} catch {
+		const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		return new RegExp(escaped);
+	}
+}
+
+function parseUnifiedDiff(diff: string): DiffFile[] {
+	const lines = diff.split("\n");
+	const files: DiffFile[] = [];
+	let currentFile: DiffFile | null = null;
+	let currentHunk: DiffHunk | null = null;
+
+	const pushCurrent = () => {
+		if (currentFile) files.push(currentFile);
+		currentFile = null;
+		currentHunk = null;
+	};
+
+	for (const line of lines) {
+		if (line.startsWith("diff --git ")) {
+			pushCurrent();
+			const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+			const path = match ? match[2] : line.replace("diff --git ", "");
+			currentFile = { path, headerLines: [line], hunks: [] };
+			continue;
+		}
+
+		if (!currentFile) continue;
+
+		if (line.startsWith("@@ ")) {
+			const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+			const oldStart = match ? Number(match[1]) : 0;
+			const newStart = match ? Number(match[2]) : 0;
+			currentHunk = { header: line, lines: [line], oldStart, newStart };
+			currentFile.hunks.push(currentHunk);
+			continue;
+		}
+
+		if (currentHunk) {
+			currentHunk.lines.push(line);
+		} else {
+			currentFile.headerLines.push(line);
+		}
+	}
+
+	pushCurrent();
+	return files;
+}
+
+function filterDiffFiles(
+	files: DiffFile[],
+	options: { paths?: string[]; grep?: string },
+): DiffFile[] {
+	let filtered = files;
+	if (options.paths?.length) {
+		filtered = filtered.filter((file) =>
+			options.paths?.some((path) => file.path === path || file.path.startsWith(`${path}/`)),
+		);
+	}
+
+	const grep = compileGrep(options.grep);
+	if (!grep) return filtered;
+
+	return filtered
+		.map((file) => {
+			const hunks = file.hunks.filter((hunk) => hunk.lines.some((line) => grep.test(line)));
+			return { ...file, hunks };
+		})
+		.filter((file) => file.hunks.length > 0);
+}
+
+function diffAnchor(path: string): string {
+	return createHash("sha256").update(path).digest("hex");
+}
+
+function hunkLinkTarget(hunk: DiffHunk): { line: number; side: "R" | "L" } {
+	let oldLine = hunk.oldStart;
+	let newLine = hunk.newStart;
+	let firstAdded: number | null = null;
+	let firstRemoved: number | null = null;
+
+	for (const line of hunk.lines) {
+		if (line.startsWith("@@")) {
+			continue;
+		}
+		if (line.startsWith("+") && !line.startsWith("+++")) {
+			if (firstAdded === null) firstAdded = newLine;
+			newLine += 1;
+			continue;
+		}
+		if (line.startsWith("-") && !line.startsWith("---")) {
+			if (firstRemoved === null) firstRemoved = oldLine;
+			oldLine += 1;
+			continue;
+		}
+		if (line.startsWith(" ")) {
+			oldLine += 1;
+			newLine += 1;
+			continue;
+		}
+	}
+
+	if (firstAdded !== null) return { line: firstAdded, side: "R" };
+	if (firstRemoved !== null) return { line: firstRemoved, side: "L" };
+	return { line: hunk.newStart, side: "R" };
+}
+
+function buildGithubLink(prUrl: string, path: string, line?: number, side: "R" | "L" = "R"): string {
+	const base = prUrl.replace(/\/$/, "");
+	const anchor = `diff-${diffAnchor(path)}`;
+	if (line && line > 0) {
+		return `${base}/changes#${anchor}${side}${line}`;
+	}
+	return `${base}/changes#${anchor}`;
+}
+
+function formatDiffOutput(files: DiffFile[], prUrl?: string): string {
+	if (files.length === 0) {
+		return "No diff output (filters removed all hunks).";
+	}
+
+	const blocks: string[] = [];
+
+	for (const file of files) {
+		if (file.hunks.length === 0) {
+			const diffText = [...file.headerLines].join("\n");
+			blocks.push(`### ${file.path}\n\n\`\`\`diff\n${diffText}\n\`\`\``);
+			if (prUrl) {
+				blocks.push(`GitHub: ${buildGithubLink(prUrl, file.path)}`);
+			}
+			continue;
+		}
+
+		for (const hunk of file.hunks) {
+			const diffText = [...file.headerLines, ...hunk.lines].join("\n");
+			blocks.push(`### ${file.path} (hunk +${hunk.newStart})\n\n\`\`\`diff\n${diffText}\n\`\`\``);
+			if (prUrl) {
+				const target = hunkLinkTarget(hunk);
+				blocks.push(`GitHub: ${buildGithubLink(prUrl, file.path, target.line, target.side)}`);
+			}
+		}
+	}
+
+	return blocks.join("\n\n");
+}
+
+async function postGithubComments(
+	pi: ExtensionAPI,
+	prInfo: PrInfo,
+	commentsToPost: AssistedReviewComment[],
+): Promise<{ posted: number; failed: AssistedReviewComment[] }> {
+	let posted = 0;
+	const failed: AssistedReviewComment[] = [];
+
+	for (const comment of commentsToPost) {
+		if (!comment.path || comment.line === undefined) {
+			failed.push(comment);
+			continue;
+		}
+
+		const body = `**[${comment.priority}] ${comment.title}**\n\n${comment.body}`;
+		const side = comment.side ?? "RIGHT";
+
+		const { code } = await pi.exec("gh", [
+			"api",
+			"-X",
+			"POST",
+			`repos/${prInfo.owner}/${prInfo.repo}/pulls/${prInfo.number}/comments`,
+			"-f",
+			`body=${body}`,
+			"-f",
+			`commit_id=${prInfo.headSha}`,
+			"-f",
+			`path=${comment.path}`,
+			"-f",
+			`line=${comment.line}`,
+			"-f",
+			`side=${side}`,
+		]);
+
+		if (code === 0) {
+			posted += 1;
+		} else {
+			failed.push(comment);
+		}
+	}
+
+	return { posted, failed };
+}
+
+async function postGithubSummary(
+	pi: ExtensionAPI,
+	prInfo: PrInfo,
+	body: string,
+): Promise<boolean> {
+	const { code } = await pi.exec("gh", [
+		"pr",
+		"review",
+		String(prInfo.number),
+		"--repo",
+		`${prInfo.owner}/${prInfo.repo}`,
+		"--comment",
+		"-b",
+		body,
+	]);
+
+	return code === 0;
+}
+
+export default function assistedReviewExtension(pi: ExtensionAPI) {
+	// Persist review mode state
+	const persistReviewMode = () => {
+		pi.appendEntry<ReviewModeState>("assisted-review-mode", {
+			active: reviewActive,
+			originId: reviewOriginId,
+			previousTools: previousActiveTools ?? undefined,
+			prRef: activePrRef ?? undefined,
+		});
+	};
+
+	const reconstructState = (ctx: ExtensionContext, restoreUI = true) => {
+		comments = [];
+		nextCommentId = 1;
+		reviewActive = false;
+		reviewOriginId = undefined;
+		previousActiveTools = null;
+		activePrRef = null;
+
+		for (const entry of ctx.sessionManager.getBranch()) {
+			// Restore comment state from tool results
+			if (entry.type === "message") {
+				const msg = entry.message;
+				if (msg.role === "toolResult" && msg.toolName === "assisted_review_comment") {
+					const details = msg.details as AssistedReviewDetails | undefined;
+					if (details) {
+						comments = details.comments;
+						nextCommentId = details.nextId;
+					}
+				}
+			}
+
+			// Restore review mode state from custom entries
+			if (entry.type === "custom" && entry.customType === "assisted-review-mode") {
+				const data = entry.data as ReviewModeState | undefined;
+				if (data) {
+					reviewActive = data.active;
+					reviewOriginId = data.originId;
+					previousActiveTools = data.previousTools ?? null;
+					activePrRef = data.prRef ?? null;
+				}
+			}
+		}
+
+		// Re-activate UI if review mode is active
+		if (restoreUI && reviewActive && ctx.hasUI) {
+			// Re-enable tools
+			if (previousActiveTools) {
+				const toolNames = new Set(previousActiveTools);
+				toolNames.add("assisted_review_comment");
+				toolNames.add("assisted_review_diff");
+				pi.setActiveTools([...toolNames]);
+			}
+
+			// Re-show widget
+			ctx.ui.setWidget("assisted-review", (_tui, theme) => {
+				const text = new Text(theme.fg("warning", "Assisted review active • /end-assisted-review to finish"), 0, 0);
+				return {
+					render(width: number) {
+						return text.render(width);
+					},
+					invalidate() {
+						text.invalidate();
+					},
+				};
+			});
+		}
+	};
+
+	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_switch", async (_event, ctx) => reconstructState(ctx, false));
+	pi.on("session_fork", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+
+	pi.registerTool({
+		name: "assisted_review_comment",
+		label: "Assisted Review Comment",
+		description: "Capture review comments during assisted review. Actions: list, add, clear.",
+		parameters: COMMENT_PARAMS,
+		async execute(_toolCallId, params) {
+			switch (params.action) {
+				case "list":
+					return {
+						content: [
+							{
+								type: "text",
+								text: comments.length
+									? comments
+											.map((comment) =>
+													`[${comment.priority}] #${comment.id} ${comment.title}` +
+													(comment.path && comment.line !== undefined
+														? ` (${comment.path}:${comment.line})`
+														: ""),
+											)
+											.join("\n")
+									: "No comments captured",
+							},
+						],
+						details: { action: "list", comments: [...comments], nextId: nextCommentId } as AssistedReviewDetails,
+					};
+
+				case "add": {
+					if (!params.title || !params.body || !params.priority) {
+						return {
+							content: [{ type: "text", text: "Error: title, body, and priority are required" }],
+							details: {
+								action: "add",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "missing required fields",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					if (params.line !== undefined && !params.path) {
+						return {
+							content: [{ type: "text", text: "Error: path is required when line is provided" }],
+							details: {
+								action: "add",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "path required for line",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					const newComment: AssistedReviewComment = {
+						id: nextCommentId++,
+						title: params.title,
+						body: params.body,
+						priority: params.priority,
+						path: params.path,
+						line: params.line,
+						side: params.side,
+					};
+					comments.push(newComment);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Added comment #${newComment.id}: ${newComment.title}`,
+							},
+						],
+						details: { action: "add", comments: [...comments], nextId: nextCommentId } as AssistedReviewDetails,
+					};
+				}
+
+				case "clear": {
+					const count = comments.length;
+					comments = [];
+					nextCommentId = 1;
+					return {
+						content: [{ type: "text", text: `Cleared ${count} comments` }],
+						details: { action: "clear", comments: [], nextId: 1 } as AssistedReviewDetails,
+					};
+				}
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "assisted_review_diff",
+		label: "Assisted Review Diff",
+		description: "Render a unified diff for assisted review (git, GitHub PR, or provided diff).",
+		parameters: DIFF_PARAMS,
+		async execute(_toolCallId, params) {
+			let diffText = "";
+			let prUrl: string | undefined;
+
+			switch (params.source) {
+				case "diff": {
+					if (!params.diff) {
+						return {
+							content: [{ type: "text", text: "Error: diff is required when source=diff" }],
+						};
+					}
+					diffText = params.diff;
+					break;
+				}
+				case "git": {
+					const args = ["diff", `--unified=${params.context ?? 3}`];
+					if (params.base && params.head) {
+						args.push(params.base, params.head);
+					} else if (params.base) {
+						args.push(params.base);
+					} else if (params.head) {
+						args.push(params.head);
+					}
+
+					if (params.paths?.length) {
+						args.push("--", ...params.paths);
+					}
+
+					const { stdout, stderr, code } = await pi.exec("git", args);
+					if (code !== 0) {
+						return {
+							content: [{ type: "text", text: `Error: git diff failed\n${stderr || stdout}` }],
+						};
+					}
+					diffText = stdout;
+					break;
+				}
+				case "pr": {
+					if (!params.pr) {
+						return {
+							content: [{ type: "text", text: "Error: pr is required when source=pr" }],
+						};
+					}
+					if (!(await ensureGhAvailable(pi))) {
+						return { content: [{ type: "text", text: "Error: gh CLI not available" }] };
+					}
+					const prInfo = await resolvePrInfo(pi, params.pr);
+					if (!prInfo) {
+						return { content: [{ type: "text", text: "Error: failed to resolve PR info" }] };
+					}
+					prUrl = prInfo.url;
+					const { stdout, stderr, code } = await pi.exec("gh", [
+						"pr",
+						"diff",
+						params.pr,
+						"--patch",
+						"--color=never",
+					]);
+					if (code !== 0) {
+						return {
+							content: [{ type: "text", text: `Error: gh pr diff failed\n${stderr || stdout}` }],
+						};
+					}
+					diffText = stdout;
+					break;
+				}
+			}
+
+			if (!diffText.trim()) {
+				return { content: [{ type: "text", text: "No diff output" }] };
+			}
+
+			const files = parseUnifiedDiff(diffText);
+			const filtered = filterDiffFiles(files, { paths: params.paths, grep: params.grep });
+			const rendered = formatDiffOutput(filtered, prUrl);
+
+			return {
+				content: [{ type: "text", text: rendered }],
+				details: {
+					files: filtered.length,
+					hunks: filtered.reduce((acc, file) => acc + file.hunks.length, 0),
+				},
+			};
+		},
+		renderResult(result, { isPartial }, theme) {
+			if (isPartial) {
+				return new Text(theme.fg("warning", "Rendering diff..."), 0, 0);
+			}
+
+			const text = result.content
+				?.filter((item): item is { type: "text"; text: string } => item.type === "text")
+				.map((item) => item.text)
+				.join("\n");
+
+			if (!text) {
+				return new Text("", 0, 0);
+			}
+
+			return new Markdown(text, 0, 0, getMarkdownTheme());
+		},
+	});
+
+	async function getSmartDefault(): Promise<"uncommitted" | "baseBranch" | "commit"> {
+		if (await hasUncommittedChanges(pi)) {
+			return "uncommitted";
+		}
+
+		const currentBranch = await getCurrentBranch(pi);
+		const defaultBranch = await getDefaultBranch(pi);
+		if (currentBranch && currentBranch !== defaultBranch) {
+			return "baseBranch";
+		}
+
+		return "commit";
+	}
+
+	async function showReviewSelector(ctx: ExtensionContext): Promise<AssistedReviewTarget | null> {
+		const smartDefault = await getSmartDefault();
+		const items: SelectItem[] = REVIEW_PRESETS
+			.slice()
+			.sort((a, b) => {
+				if (a.value === smartDefault) return -1;
+				if (b.value === smartDefault) return 1;
+				return 0;
+			})
+			.map((preset) => ({
+				value: preset.value,
+				label: preset.label,
+				description: preset.description,
+			}));
+
+		const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Select assisted review preset"))));
+
+			const selectList = new SelectList(items, Math.min(items.length, 10), {
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			});
+
+			selectList.onSelect = (item) => done(item.value);
+			selectList.onCancel = () => done(null);
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "Press enter to confirm or esc to go back")));
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					selectList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+
+		if (!result) return null;
+
+		switch (result) {
+			case "uncommitted":
+				return { type: "uncommitted" };
+			case "baseBranch":
+				return await showBranchSelector(ctx);
+			case "commit":
+				return await showCommitSelector(ctx);
+			case "pr":
+				return await showPrInput(ctx);
+			case "custom":
+				return await showCustomInput(ctx);
+			default:
+				return null;
+		}
+	}
+
+	async function showBranchSelector(ctx: ExtensionContext): Promise<AssistedReviewTarget | null> {
+		const branches = await getLocalBranches(pi);
+		const defaultBranch = await getDefaultBranch(pi);
+
+		if (branches.length === 0) {
+			ctx.ui.notify("No branches found", "error");
+			return null;
+		}
+
+		const sortedBranches = branches.sort((a, b) => {
+			if (a === defaultBranch) return -1;
+			if (b === defaultBranch) return 1;
+			return a.localeCompare(b);
+		});
+
+		const items: SelectItem[] = sortedBranches.map((branch) => ({
+			value: branch,
+			label: branch,
+			description: branch === defaultBranch ? "(default)" : "",
+		}));
+
+		const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Select base branch"))));
+
+			const selectList = new SelectList(items, Math.min(items.length, 10), {
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			});
+
+			selectList.searchable = true;
+			selectList.onSelect = (item) => done(item.value);
+			selectList.onCancel = () => done(null);
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "Type to filter • enter to select • esc to cancel")));
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					selectList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+
+		if (!result) return null;
+		return { type: "baseBranch", branch: result };
+	}
+
+	async function showCommitSelector(ctx: ExtensionContext): Promise<AssistedReviewTarget | null> {
+		const commits = await getRecentCommits(pi, 20);
+
+		if (commits.length === 0) {
+			ctx.ui.notify("No commits found", "error");
+			return null;
+		}
+
+		const items: SelectItem[] = commits.map((commit) => ({
+			value: commit.sha,
+			label: `${commit.sha.slice(0, 7)} ${commit.title}`,
+			description: "",
+		}));
+
+		const result = await ctx.ui.custom<{ sha: string; title: string } | null>((tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Select commit to review"))));
+
+			const selectList = new SelectList(items, Math.min(items.length, 10), {
+				selectedPrefix: (text) => theme.fg("accent", text),
+				selectedText: (text) => theme.fg("accent", text),
+				description: (text) => theme.fg("muted", text),
+				scrollInfo: (text) => theme.fg("dim", text),
+				noMatch: (text) => theme.fg("warning", text),
+			});
+
+			selectList.searchable = true;
+			selectList.onSelect = (item) => {
+				const commit = commits.find((c) => c.sha === item.value);
+				if (commit) {
+					done(commit);
+				} else {
+					done(null);
+				}
+			};
+			selectList.onCancel = () => done(null);
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "Type to filter • enter to select • esc to cancel")));
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					selectList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+
+		if (!result) return null;
+		return { type: "commit", sha: result.sha, title: result.title };
+	}
+
+	async function showPrInput(ctx: ExtensionContext): Promise<AssistedReviewTarget | null> {
+		const result = await ctx.ui.input("Enter PR number or GitHub URL:", "123 or https://github.com/org/repo/pull/123");
+		if (!result?.trim()) return null;
+		return { type: "pr", ref: result.trim() };
+	}
+
+	async function showCustomInput(ctx: ExtensionContext): Promise<AssistedReviewTarget | null> {
+		const result = await ctx.ui.editor(
+			"Enter assisted review instructions:",
+			"Skim the changes and guide a human review focusing on architecture and risks...",
+		);
+		if (!result?.trim()) return null;
+		return { type: "custom", instructions: result.trim() };
+	}
+
+	function parseArgs(args: string | undefined): AssistedReviewTarget | null {
+		if (!args?.trim()) return null;
+
+		const parts = args.trim().split(/\s+/);
+		const subcommand = parts[0]?.toLowerCase();
+
+		switch (subcommand) {
+			case "uncommitted":
+				return { type: "uncommitted" };
+			case "branch": {
+				const branch = parts[1];
+				if (!branch) return null;
+				return { type: "baseBranch", branch };
+			}
+			case "commit": {
+				const sha = parts[1];
+				if (!sha) return null;
+				const title = parts.slice(2).join(" ") || undefined;
+				return { type: "commit", sha, title };
+			}
+			case "pr": {
+				const ref = parts[1];
+				if (!ref) return null;
+				return { type: "pr", ref };
+			}
+			case "custom": {
+				const instructions = parts.slice(1).join(" ");
+				if (!instructions) return null;
+				return { type: "custom", instructions };
+			}
+			default: {
+				if (/^\d+$/.test(subcommand) || subcommand.startsWith("http")) {
+					return { type: "pr", ref: args.trim() };
+				}
+				return null;
+			}
+		}
+	}
+
+	async function activateCommentTool(ctx: ExtensionContext): Promise<void> {
+		if (previousActiveTools) return;
+		previousActiveTools = pi.getActiveTools();
+		const toolNames = new Set(previousActiveTools);
+		toolNames.add("assisted_review_comment");
+		toolNames.add("assisted_review_diff");
+		pi.setActiveTools([...toolNames]);
+		ctx.ui.setWidget("assisted-review", (_tui, theme) => {
+			const text = new Text(theme.fg("warning", "Assisted review active • /end-assisted-review to finish"), 0, 0);
+			return {
+				render(width: number) {
+					return text.render(width);
+				},
+				invalidate() {
+					text.invalidate();
+				},
+			};
+		});
+	}
+
+	function deactivateCommentTool(ctx: ExtensionContext): void {
+		if (!previousActiveTools) return;
+		pi.setActiveTools(previousActiveTools);
+		previousActiveTools = null;
+		ctx.ui.setWidget("assisted-review", undefined);
+	}
+
+	async function executeReview(ctx: ExtensionCommandContext, target: AssistedReviewTarget, useFreshSession: boolean) {
+		if (reviewActive) {
+			ctx.ui.notify("Already in an assisted review. Use /end-assisted-review to finish first.", "warning");
+			return;
+		}
+
+		reviewActive = true;
+		activePrRef = target.type === "pr" ? target.ref : null;
+
+		if (useFreshSession) {
+			reviewOriginId = ctx.sessionManager.getLeafId() ?? undefined;
+			const entries = ctx.sessionManager.getEntries();
+			const firstUserMessage = entries.find((e) => e.type === "message" && e.message.role === "user");
+			if (!firstUserMessage) {
+				ctx.ui.notify("No user message found in session", "error");
+				reviewActive = false;
+				reviewOriginId = undefined;
+				activePrRef = null;
+				return;
+			}
+
+			try {
+				const result = await ctx.navigateTree(firstUserMessage.id, { summarize: false, label: "assisted-review" });
+				if (result.cancelled) {
+					reviewActive = false;
+					reviewOriginId = undefined;
+					activePrRef = null;
+					return;
+				}
+			} catch (error) {
+				reviewActive = false;
+				reviewOriginId = undefined;
+				activePrRef = null;
+				ctx.ui.notify(`Failed to start assisted review: ${error instanceof Error ? error.message : String(error)}`, "error");
+				return;
+			}
+
+			ctx.ui.setEditorText("");
+		}
+
+		await activateCommentTool(ctx);
+		persistReviewMode();
+
+		const prompt = await buildAssistedPrompt(pi, target);
+		const hint = getUserFacingHint(target);
+
+		ctx.ui.notify(`Starting assisted review: ${hint}${useFreshSession ? " (fresh session)" : ""}`, "info");
+		pi.sendUserMessage(prompt);
+	}
+
+	async function shareComments(ctx: ExtensionCommandContext): Promise<void> {
+		if (comments.length === 0) {
+			ctx.ui.notify("No comments to share", "info");
+			return;
+		}
+
+		const shareChoice = await ctx.ui.select("Share comments?", ["Yes", "No"]);
+		if (shareChoice !== "Yes") {
+			ctx.ui.notify("Comments not shared", "info");
+			return;
+		}
+
+		const canShareToPr = activePrRef !== null;
+		const options = canShareToPr ? ["Markdown", "GitHub PR"] : ["Markdown"];
+		const target = await ctx.ui.select("Share comments as:", options);
+		if (!target) {
+			ctx.ui.notify("Share cancelled", "info");
+			return;
+		}
+
+		if (target === "Markdown") {
+			ctx.ui.setEditorText(formatMarkdown(comments));
+			ctx.ui.notify("Comments loaded into editor", "info");
+			return;
+		}
+
+		if (!activePrRef) {
+			ctx.ui.notify("No PR target available", "error");
+			return;
+		}
+
+		if (!(await ensureGhAvailable(pi))) {
+			ctx.ui.notify("gh CLI not available", "error");
+			return;
+		}
+
+		const result = await ctx.ui.custom<{ ok: boolean; error?: string } | null>((tui, theme, _kb, done) => {
+			const loader = new BorderedLoader(tui, theme, "Posting review comments to GitHub...");
+			loader.onAbort = () => done(null);
+
+			const doPost = async () => {
+				const prInfo = await resolvePrInfo(pi, activePrRef);
+				if (!prInfo) {
+					return { ok: false, error: "Failed to resolve PR info" };
+				}
+
+				const inlineComments = comments.filter((comment) => comment.path && comment.line !== undefined);
+				const summaryComments = comments.filter((comment) => !comment.path || comment.line === undefined);
+
+				const { posted, failed } = await postGithubComments(pi, prInfo, inlineComments);
+
+				const summaryBodyParts: string[] = ["## Assisted Review Summary", ""];
+				for (const comment of summaryComments) {
+					summaryBodyParts.push(`- **[${comment.priority}] ${comment.title}**`, "");
+					summaryBodyParts.push(comment.body, "");
+				}
+
+				if (failed.length > 0) {
+					summaryBodyParts.push("## Inline Comments (fallback)", "");
+					for (const comment of failed) {
+						summaryBodyParts.push(
+							`- **[${comment.priority}] ${comment.title}** (${comment.path}:${comment.line})`,
+							"",
+							comment.body,
+							"",
+						);
+					}
+				}
+
+				const summaryBody = summaryBodyParts.join("\n").trim();
+				const summaryOk = await postGithubSummary(pi, prInfo, summaryBody);
+				if (!summaryOk) {
+					return { ok: false, error: "Failed to post PR summary" };
+				}
+
+				return { ok: true, error: posted ? undefined : "No inline comments posted" };
+			};
+
+			doPost()
+				.then(done)
+				.catch((err) => done({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+
+			return loader;
+		});
+
+		if (result === null) {
+			ctx.ui.notify("Share cancelled", "info");
+			return;
+		}
+
+		if (!result.ok) {
+			ctx.ui.notify(result.error ?? "Failed to post comments", "error");
+			return;
+		}
+
+		ctx.ui.notify("Comments posted to GitHub", "info");
+	}
+
+	pi.registerCommand("assisted-review", {
+		description: "Start an assisted code review with comment capture",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("Assisted review requires interactive mode", "error");
+				return;
+			}
+
+			if (reviewActive) {
+				ctx.ui.notify("Already in an assisted review. Use /end-assisted-review to finish first.", "warning");
+				return;
+			}
+
+			const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
+			const inRepo = code === 0;
+
+			let target = parseArgs(args);
+			if (!target) {
+				if (!inRepo) {
+					ctx.ui.notify("Not a git repository (use /assisted-review pr <url|number> if needed)", "error");
+					return;
+				}
+				target = await showReviewSelector(ctx);
+			}
+
+			if (!inRepo && target.type !== "pr") {
+				ctx.ui.notify("Not a git repository", "error");
+				return;
+			}
+
+			if (!target) {
+				ctx.ui.notify("Assisted review cancelled", "info");
+				return;
+			}
+
+			const entries = ctx.sessionManager.getEntries();
+			const messageCount = entries.filter((e) => e.type === "message").length;
+			let useFreshSession = false;
+
+			if (messageCount > 0) {
+				const choice = await ctx.ui.select("Start assisted review in:", ["Empty branch", "Current session"]);
+				if (choice === undefined) {
+					ctx.ui.notify("Assisted review cancelled", "info");
+					return;
+				}
+				useFreshSession = choice === "Empty branch";
+			}
+
+			await executeReview(ctx, target, useFreshSession);
+		},
+	});
+
+	pi.registerCommand("end-assisted-review", {
+		description: "End assisted review, share comments, and return",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("End-assisted-review requires interactive mode", "error");
+				return;
+			}
+
+			if (!reviewActive) {
+				ctx.ui.notify("Not in an assisted review", "info");
+				return;
+			}
+
+			await shareComments(ctx);
+
+			if (reviewOriginId) {
+				try {
+					const result = await ctx.navigateTree(reviewOriginId, { summarize: false });
+					if (result.cancelled) {
+						ctx.ui.notify("Navigation cancelled", "info");
+						return;
+					}
+				} catch (error) {
+					ctx.ui.notify(`Failed to return: ${error instanceof Error ? error.message : String(error)}`, "error");
+					return;
+				}
+			}
+
+			reviewActive = false;
+			reviewOriginId = undefined;
+			activePrRef = null;
+			deactivateCommentTool(ctx);
+			persistReviewMode();
+			ctx.ui.notify("Assisted review complete", "info");
+		},
+	});
+}
