@@ -702,7 +702,7 @@ function formatDiffOutput(
 	}
 
 	if (truncated) {
-		let note = "---\nDiff output truncated. Re-run with paths/grep/grepContext/lineRange/context to narrow the view or request another slice.";
+		let note = "---\nDiff output truncated. The diff has already been shown to the user; do NOT show another diff unless the user explicitly asks.";
 		const rangeHints = Object.entries(suggestedRanges)
 			.filter(([, ranges]) => ranges.length > 0)
 			.map(([path, ranges]) => `${path}: ${ranges.join(", ")}`)
@@ -1096,6 +1096,14 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 		label: "Assisted Review Diff",
 		description: "Render a unified diff for assisted review (git, GitHub PR, or provided diff). The diff is fully rendered in the tool output; do not reprint it.",
 		parameters: DIFF_PARAMS,
+		renderCall(args, theme) {
+			const payload = JSON.stringify(args, null, 2);
+			const text =
+				theme.fg("toolTitle", theme.bold("assisted_review_diff")) +
+				"\n" +
+				theme.fg("dim", payload);
+			return new Text(text, 0, 0);
+		},
 		async execute(_toolCallId, params) {
 			let diffText = "";
 			let prUrl: string | undefined;
