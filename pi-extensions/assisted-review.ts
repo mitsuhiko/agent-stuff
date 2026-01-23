@@ -606,11 +606,39 @@ function computeFileLineRanges(file: DiffFile, chunkSize: number): string[] {
 	return ranges;
 }
 
+function parsePrettyDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
+	const match = line.match(/^([+-\s])(\s*\d*)\s(.*)$/);
+	if (!match) return null;
+	return { prefix: match[1], lineNum: match[2], content: match[3] };
+}
+
+function renderPrettyDiff(text: string, theme: { fg: (c: string, s: string) => string }): string {
+	const lines = text.split("\n");
+	return lines
+		.map((line) => {
+			const parsed = parsePrettyDiffLine(line);
+			if (!parsed) {
+				return theme.fg("toolDiffContext", line);
+			}
+
+			switch (parsed.prefix) {
+				case "+":
+					return theme.fg("toolDiffAdded", `+${parsed.lineNum} ${parsed.content}`);
+				case "-":
+					return theme.fg("toolDiffRemoved", `-${parsed.lineNum} ${parsed.content}`);
+				default:
+					return theme.fg("toolDiffContext", ` ${parsed.lineNum} ${parsed.content}`);
+			}
+		})
+		.join("\n");
+}
+
 function formatDiffOutput(
 	files: DiffFile[],
 	options: { prUrl?: string; maxLines: number; maxHunks: number },
 ): {
 	text: string;
+	diffText: string;
 	info: {
 		shownFiles: number;
 		shownHunks: number;
@@ -622,11 +650,13 @@ function formatDiffOutput(
 	if (files.length === 0) {
 		return {
 			text: "No diff output (filters removed all hunks).",
+			diffText: "",
 			info: { shownFiles: 0, shownHunks: 0, shownLines: 0, truncated: false, suggestedRanges: {} },
 		};
 	}
 
 	const blocks: string[] = [];
+	const diffBlocks: string[] = [];
 	let shownHunks = 0;
 	let shownFiles = 0;
 	let shownLines = 0;
@@ -639,6 +669,11 @@ function formatDiffOutput(
 		blocks.push(text);
 	};
 
+	const addDiffBlock = (text: string) => {
+		if (text.trim().length === 0) return;
+		diffBlocks.push(text);
+	};
+
 	for (const file of files) {
 		if (shownHunks >= options.maxHunks || shownLines >= options.maxLines) {
 			truncated = true;
@@ -646,11 +681,14 @@ function formatDiffOutput(
 		}
 
 		let fileShown = false;
+		let diffStarted = false;
+		let prettyHeaderAdded = false;
 
 		if (file.hunks.length === 0) {
 			const diffText = [...file.headerLines].join("\n");
-			const block = `### ${file.path}\n\n\`\`\`diff\n${diffText}\n\`\`\``;
+			const block = `== ${file.path}\n${diffText}`;
 			addBlock(block);
+			addDiffBlock(`  ${file.path}`);
 			fileShown = true;
 			if (options.prUrl) {
 				addBlock(`GitHub: ${buildGithubLink(options.prUrl, file.path)}`);
@@ -677,14 +715,49 @@ function formatDiffOutput(
 			}
 
 			const diffText = linesToRender.join("\n");
-			let block = `### ${file.path} (hunk +${hunk.newStart})\n\n\`\`\`diff\n${diffText}\n`;
+			let block = `== ${file.path} (hunk +${hunk.newStart})\n${diffText}`;
 			if (hunkTruncated) {
-				block += "... (truncated)\n";
+				block += "\n... (truncated)";
 			}
-			block += "\`\`\`";
 			addBlock(block);
 			fileShown = true;
 			shownHunks += 1;
+
+			if (!prettyHeaderAdded) {
+				addDiffBlock(`  ${file.path}`);
+				prettyHeaderAdded = true;
+			}
+
+			const prettyLines: string[] = [];
+			let oldLine = hunk.oldStart;
+			let newLine = hunk.newStart;
+			for (const line of hunk.lines) {
+				if (line.startsWith("@@")) continue;
+				if (line.startsWith("+") && !line.startsWith("+++")) {
+					prettyLines.push(`+${newLine} ${line.slice(1)}`);
+					newLine += 1;
+					continue;
+				}
+				if (line.startsWith("-") && !line.startsWith("---")) {
+					prettyLines.push(`-${oldLine} ${line.slice(1)}`);
+					oldLine += 1;
+					continue;
+				}
+				if (line.startsWith(" ")) {
+					prettyLines.push(` ${newLine} ${line.slice(1)}`);
+					oldLine += 1;
+					newLine += 1;
+					continue;
+				}
+				prettyLines.push(` ${newLine} ${line}`);
+			}
+
+			addDiffBlock(prettyLines.join("\n"));
+			if (!diffStarted) {
+				diffStarted = true;
+			} else {
+				addDiffBlock("");
+			}
 
 			if (options.prUrl) {
 				const target = hunkLinkTarget(hunk);
@@ -715,6 +788,7 @@ function formatDiffOutput(
 
 	return {
 		text: blocks.join("\n\n"),
+		diffText: diffBlocks.join("\n"),
 		info: { shownFiles, shownHunks, shownLines, truncated, suggestedRanges },
 	};
 }
@@ -1096,14 +1170,6 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 		label: "Assisted Review Diff",
 		description: "Render a unified diff for assisted review (git, GitHub PR, or provided diff). The diff is fully rendered in the tool output; do not reprint it.",
 		parameters: DIFF_PARAMS,
-		renderCall(args, theme) {
-			const payload = JSON.stringify(args, null, 2);
-			const text =
-				theme.fg("toolTitle", theme.bold("assisted_review_diff")) +
-				"\n" +
-				theme.fg("dim", payload);
-			return new Text(text, 0, 0);
-		},
 		async execute(_toolCallId, params) {
 			let diffText = "";
 			let prUrl: string | undefined;
@@ -1203,26 +1269,44 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					suggestedRanges: rendered.info.suggestedRanges,
 					maxLines,
 					maxHunks,
+					diffText: rendered.diffText,
+					request: params,
 				},
 			};
 		},
-		renderResult(result, { isPartial }, theme) {
+		renderResult(result, { isPartial, expanded }, theme) {
 			if (isPartial) {
 				return new Text(theme.fg("warning", "Rendering diff..."), 0, 0);
 			}
 
-			const text = result.content
-				?.filter((item): item is { type: "text"; text: string } => item.type === "text")
-				.map((item) => item.text)
-				.join("\n");
+			const details = result.details as
+				| { shownFiles?: number; shownHunks?: number; shownLines?: number; truncated?: boolean; diffText?: string }
+				| undefined;
 
-			if (!text) {
+			if (!expanded) {
+				const stats = [
+					`files ${details?.shownFiles ?? 0}`,
+					`hunks ${details?.shownHunks ?? 0}`,
+					`lines ${details?.shownLines ?? 0}`,
+				];
+				const suffix = details?.truncated ? " (truncated)" : "";
+				return new Text(theme.fg("muted", `Diff stats: ${stats.join(" • ")}${suffix}`), 0, 0);
+			}
+
+			const diffText =
+				details?.diffText ??
+				result.content
+					?.filter((item): item is { type: "text"; text: string } => item.type === "text")
+					.map((item) => item.text)
+					.join("\n") ??
+				"";
+
+			if (!diffText) {
 				return new Text("", 0, 0);
 			}
 
-			const mdTheme = getMarkdownTheme();
-			const diffTheme = { ...mdTheme, codeBlockIndent: "" };
-			return new Markdown(text, 0, 0, diffTheme);
+			const renderedDiff = renderPrettyDiff(diffText, theme);
+			return new Text(renderedDiff, 0, 0);
 		},
 	});
 
