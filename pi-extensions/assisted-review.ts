@@ -41,6 +41,7 @@ interface AssistedReviewComment {
 	path?: string;
 	line?: number;
 	side?: "RIGHT" | "LEFT";
+	position?: number;
 }
 
 interface AssistedReviewDetails {
@@ -119,6 +120,7 @@ const COMMENT_PARAMS = Type.Object({
 	path: Type.Optional(Type.String({ description: "File path for inline comment" })),
 	line: Type.Optional(Type.Number({ description: "Line number for inline comment" })),
 	side: Type.Optional(StringEnum(["RIGHT", "LEFT"] as const)),
+	position: Type.Optional(Type.Number({ description: "Diff position for inline comment" })),
 });
 
 const DIFF_PARAMS = Type.Object({
@@ -797,20 +799,20 @@ async function postGithubComments(
 	pi: ExtensionAPI,
 	prInfo: PrInfo,
 	commentsToPost: AssistedReviewComment[],
-): Promise<{ posted: number; failed: AssistedReviewComment[] }> {
+): Promise<{ posted: number; failed: AssistedReviewComment[]; errors: string[] }> {
 	let posted = 0;
 	const failed: AssistedReviewComment[] = [];
+	const errors: string[] = [];
 
 	for (const comment of commentsToPost) {
-		if (!comment.path || comment.line === undefined) {
+		if (!comment.path || comment.position === undefined) {
 			failed.push(comment);
+			errors.push(`Comment #${comment.id}: missing path/position`);
 			continue;
 		}
 
 		const body = `**[${comment.priority}] ${comment.title}**\n\n${comment.body}`;
-		const side = comment.side ?? "RIGHT";
-
-		const { code } = await pi.exec("gh", [
+		const { code, stdout, stderr } = await pi.exec("gh", [
 			"api",
 			"-X",
 			"POST",
@@ -821,40 +823,22 @@ async function postGithubComments(
 			`commit_id=${prInfo.headSha}`,
 			"-f",
 			`path=${comment.path}`,
-			"-f",
-			`line=${comment.line}`,
-			"-f",
-			`side=${side}`,
+			"-F",
+			`position=${comment.position}`,
 		]);
 
 		if (code === 0) {
 			posted += 1;
 		} else {
 			failed.push(comment);
+			const detail = (stderr || stdout).trim();
+			errors.push(`Comment #${comment.id} (${comment.path}:${comment.position}): ${detail || "unknown error"}`);
 		}
 	}
 
-	return { posted, failed };
+	return { posted, failed, errors };
 }
 
-async function postGithubSummary(
-	pi: ExtensionAPI,
-	prInfo: PrInfo,
-	body: string,
-): Promise<boolean> {
-	const { code } = await pi.exec("gh", [
-		"pr",
-		"review",
-		String(prInfo.number),
-		"--repo",
-		`${prInfo.owner}/${prInfo.repo}`,
-		"--comment",
-		"-b",
-		body,
-	]);
-
-	return code === 0;
-}
 
 export default function assistedReviewExtension(pi: ExtensionAPI) {
 	// Persist review mode state
@@ -997,6 +981,30 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 						};
 					}
 
+					if (params.position !== undefined && !params.path) {
+						return {
+							content: [{ type: "text", text: "Error: path is required when position is provided" }],
+							details: {
+								action: "add",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "path required for position",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					if (params.path && params.position === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: position is required when path is provided" }],
+							details: {
+								action: "add",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "position required for inline comment",
+							} as AssistedReviewDetails,
+						};
+					}
+
 					const newComment: AssistedReviewComment = {
 						id: nextCommentId++,
 						title: params.title,
@@ -1005,6 +1013,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 						path: params.path,
 						line: params.line,
 						side: params.side,
+						position: params.position,
 					};
 					comments.push(newComment);
 					persistCommentsState();
@@ -1066,6 +1075,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 							next.path = undefined;
 							next.line = undefined;
 							next.side = undefined;
+							next.position = undefined;
 						} else {
 							next.path = params.path;
 						}
@@ -1074,7 +1084,10 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					if (params.line !== undefined) {
 						if (params.line <= 0) {
 							next.line = undefined;
-							if (!next.path) next.side = undefined;
+							if (!next.path) {
+								next.side = undefined;
+								next.position = undefined;
+							}
 						} else {
 							next.line = params.line;
 						}
@@ -1082,6 +1095,14 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					}
 					if (params.side !== undefined) {
 						next.side = params.side;
+						changed = true;
+					}
+					if (params.position !== undefined) {
+						if (params.position <= 0) {
+							next.position = undefined;
+						} else {
+							next.position = params.position;
+						}
 						changed = true;
 					}
 
@@ -1105,6 +1126,30 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 								comments: [...comments],
 								nextId: nextCommentId,
 								error: "path required for line",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					if (next.position !== undefined && !next.path) {
+						return {
+							content: [{ type: "text", text: "Error: path is required when position is provided" }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "path required for position",
+							} as AssistedReviewDetails,
+						};
+					}
+
+					if (next.path && next.position === undefined) {
+						return {
+							content: [{ type: "text", text: "Error: position is required when path is provided" }],
+							details: {
+								action: "update",
+								comments: [...comments],
+								nextId: nextCommentId,
+								error: "position required for inline comment",
 							} as AssistedReviewDetails,
 						};
 					}
@@ -1679,7 +1724,7 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 		}
 
 		const result = await ctx.ui.custom<{ ok: boolean; error?: string } | null>((tui, theme, _kb, done) => {
-			const loader = new BorderedLoader(tui, theme, "Posting review comments to GitHub...");
+			const loader = new BorderedLoader(tui, theme, "Posting inline review comments to GitHub...");
 			loader.onAbort = () => done(null);
 
 			const doPost = async () => {
@@ -1688,33 +1733,25 @@ export default function assistedReviewExtension(pi: ExtensionAPI) {
 					return { ok: false, error: "Failed to resolve PR info" };
 				}
 
-				const inlineComments = comments.filter((comment) => comment.path && comment.line !== undefined);
-				const summaryComments = comments.filter((comment) => !comment.path || comment.line === undefined);
-
-				const { posted, failed } = await postGithubComments(pi, prInfo, inlineComments);
-
-				const summaryBodyParts: string[] = ["## Assisted Review Summary", ""];
-				for (const comment of summaryComments) {
-					summaryBodyParts.push(`- **[${comment.priority}] ${comment.title}**`, "");
-					summaryBodyParts.push(comment.body, "");
+				const inlineComments = comments.filter((comment) => comment.path && comment.position !== undefined);
+				const missingPosition = comments.filter((comment) => comment.path && comment.position === undefined);
+				if (missingPosition.length > 0) {
+					const ids = missingPosition.map((comment) => `#${comment.id}`).join(", ");
+					return {
+						ok: false,
+						error: `Inline comments missing diff positions: ${ids}. Capture comments from the diff view so positions are stored.`,
+					};
+				}
+				if (inlineComments.length === 0) {
+					return { ok: false, error: "No inline comments to post" };
 				}
 
+				const { posted, failed, errors } = await postGithubComments(pi, prInfo, inlineComments);
 				if (failed.length > 0) {
-					summaryBodyParts.push("## Inline Comments (fallback)", "");
-					for (const comment of failed) {
-						summaryBodyParts.push(
-							`- **[${comment.priority}] ${comment.title}** (${comment.path}:${comment.line})`,
-							"",
-							comment.body,
-							"",
-						);
-					}
-				}
-
-				const summaryBody = summaryBodyParts.join("\n").trim();
-				const summaryOk = await postGithubSummary(pi, prInfo, summaryBody);
-				if (!summaryOk) {
-					return { ok: false, error: "Failed to post PR summary" };
+					return {
+						ok: false,
+						error: `Failed to post ${failed.length} inline comment(s):\n${errors.join("\n")}`,
+					};
 				}
 
 				return { ok: true, error: posted ? undefined : "No inline comments posted" };
