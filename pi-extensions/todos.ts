@@ -1272,12 +1272,6 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "append", error: "id required" },
 						};
 					}
-					if (!params.body) {
-						return {
-							content: [{ type: "text", text: "Error: body required" }],
-							details: { action: "append", error: "body required" },
-						};
-					}
 					const normalizedId = normalizeTodoId(params.id);
 					const displayId = displayTodoId(params.id);
 					const filePath = getTodoPath(todosDir, normalizedId);
@@ -1290,7 +1284,10 @@ export default function todosExtension(pi: ExtensionAPI) {
 					const result = await withTodoLock(todosDir, normalizedId, ctx, async () => {
 						const existing = await ensureTodoExists(filePath, normalizedId);
 						if (!existing) return { error: `Todo ${displayId} not found` } as const;
-						const updated = await appendTodoBody(filePath, existing, params.body!);
+						if (!params.body || !params.body.trim()) {
+							return existing;
+						}
+						const updated = await appendTodoBody(filePath, existing, params.body);
 						return updated;
 					});
 
