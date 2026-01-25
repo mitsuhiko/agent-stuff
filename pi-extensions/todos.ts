@@ -1,3 +1,12 @@
+/**
+ * Todo storage settings are kept in <todo-dir>/settings.json.
+ *
+ * Defaults:
+ * {
+ *   "gc": true,   // delete closed todos older than gcDays on startup
+ *   "gcDays": 7   // age threshold for GC (days since created_at)
+ * }
+ */
 import { DynamicBorder, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
@@ -23,6 +32,11 @@ import {
 
 const TODO_DIR_NAME = ".pi/todos";
 const TODO_PATH_ENV = "PI_ISSUE_PATH";
+const TODO_SETTINGS_NAME = "settings.json";
+const DEFAULT_TODO_SETTINGS = {
+	gc: true,
+	gcDays: 7,
+};
 const LOCK_TTL_MS = 30 * 60 * 1000;
 
 interface TodoFrontMatter {
@@ -42,6 +56,11 @@ interface LockInfo {
 	pid: number;
 	session?: string | null;
 	created_at: string;
+}
+
+interface TodoSettings {
+	gc: boolean;
+	gcDays: number;
 }
 
 const TodoParams = Type.Object({
@@ -494,6 +513,78 @@ function getTodosDir(cwd: string): string {
 		return path.resolve(cwd, overridePath.trim());
 	}
 	return path.resolve(cwd, TODO_DIR_NAME);
+}
+
+function getTodoSettingsPath(todosDir: string): string {
+	return path.join(todosDir, TODO_SETTINGS_NAME);
+}
+
+function normalizeTodoSettings(raw: Partial<TodoSettings>): TodoSettings {
+	const gc = raw.gc ?? DEFAULT_TODO_SETTINGS.gc;
+	const gcDays = Number.isFinite(raw.gcDays) ? raw.gcDays : DEFAULT_TODO_SETTINGS.gcDays;
+	return {
+		gc: Boolean(gc),
+		gcDays: Math.max(0, Math.floor(gcDays)),
+	};
+}
+
+async function readTodoSettings(todosDir: string): Promise<TodoSettings> {
+	const settingsPath = getTodoSettingsPath(todosDir);
+	let data: Partial<TodoSettings> = {};
+	let shouldWrite = false;
+
+	try {
+		const raw = await fs.readFile(settingsPath, "utf8");
+		data = JSON.parse(raw) as Partial<TodoSettings>;
+	} catch {
+		shouldWrite = true;
+	}
+
+	const normalized = normalizeTodoSettings(data);
+	if (
+		shouldWrite ||
+		data.gc === undefined ||
+		data.gcDays === undefined ||
+		!Number.isFinite(data.gcDays)
+	) {
+		await fs.writeFile(settingsPath, JSON.stringify(normalized, null, 2) + "\n", "utf8");
+	}
+
+	return normalized;
+}
+
+async function garbageCollectTodos(todosDir: string, settings: TodoSettings): Promise<void> {
+	if (!settings.gc) return;
+
+	let entries: string[] = [];
+	try {
+		entries = await fs.readdir(todosDir);
+	} catch {
+		return;
+	}
+
+	const cutoff = Date.now() - settings.gcDays * 24 * 60 * 60 * 1000;
+	await Promise.all(
+		entries
+			.filter((entry) => entry.endsWith(".md"))
+			.map(async (entry) => {
+				const id = entry.slice(0, -3);
+				const filePath = path.join(todosDir, entry);
+				try {
+					const content = await fs.readFile(filePath, "utf8");
+					const { frontMatter } = splitFrontMatter(content);
+					const parsed = parseFrontMatter(frontMatter, id);
+					if (!isTodoClosed(parsed.status)) return;
+					const createdAt = Date.parse(parsed.created_at);
+					if (!Number.isFinite(createdAt)) return;
+					if (createdAt < cutoff) {
+						await fs.unlink(filePath);
+					}
+				} catch {
+					// ignore unreadable todo
+				}
+			}),
+	);
 }
 
 function getTodoPath(todosDir: string, id: string): string {
@@ -970,6 +1061,13 @@ async function deleteTodo(
 }
 
 export default function todosExtension(pi: ExtensionAPI) {
+	pi.on("session_start", async (_event, ctx) => {
+		const todosDir = getTodosDir(ctx.cwd);
+		await ensureTodosDir(todosDir);
+		const settings = await readTodoSettings(todosDir);
+		await garbageCollectTodos(todosDir, settings);
+	});
+
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
