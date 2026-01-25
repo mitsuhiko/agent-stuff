@@ -82,9 +82,16 @@ const TodoParams = Type.Object({
 
 type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" | "delete";
 
-type TodoOverlayAction = "work" | "refine" | "close" | "reopen" | "delete" | "cancel" | "actions";
+type TodoOverlayAction = "back" | "work";
 
-type TodoMenuAction = TodoOverlayAction | "copy-path" | "view";
+type TodoMenuAction =
+	| "work"
+	| "refine"
+	| "close"
+	| "reopen"
+	| "delete"
+	| "copy-path"
+	| "view";
 
 type TodoToolDetails =
 	| { action: "list" | "list-all"; todos: TodoFrontMatter[]; error?: string }
@@ -367,6 +374,110 @@ class TodoSelectorComponent extends Container implements Focusable {
 	}
 }
 
+class TodoActionMenuComponent extends Container {
+	private selectList: SelectList;
+	private onSelectCallback: (action: TodoMenuAction) => void;
+	private onCancelCallback: () => void;
+
+	constructor(
+		theme: Theme,
+		todo: TodoRecord,
+		onSelect: (action: TodoMenuAction) => void,
+		onCancel: () => void,
+	) {
+		super();
+		this.onSelectCallback = onSelect;
+		this.onCancelCallback = onCancel;
+
+		const closed = isTodoClosed(todo.status);
+		const title = todo.title || "(untitled)";
+		const options: SelectItem[] = [
+			{ value: "view", label: "view", description: "View todo" },
+			{ value: "work", label: "work", description: "Work on todo" },
+			{ value: "refine", label: "refine", description: "Refine task" },
+			...(closed
+				? [{ value: "reopen", label: "reopen", description: "Reopen todo" }]
+				: [{ value: "close", label: "close", description: "Close todo" }]),
+			{ value: "copy-path", label: "copy", description: "Copy path to prompt" },
+			{ value: "delete", label: "delete", description: "Delete todo" },
+		];
+
+		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		this.addChild(
+			new Text(
+				theme.fg(
+					"accent",
+					theme.bold(`Actions for ${formatTodoId(todo.id)} "${title}"`),
+				),
+			),
+		);
+
+		this.selectList = new SelectList(options, options.length, {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", text),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		});
+
+		this.selectList.onSelect = (item) => this.onSelectCallback(item.value as TodoMenuAction);
+		this.selectList.onCancel = () => this.onCancelCallback();
+
+		this.addChild(this.selectList);
+		this.addChild(new Text(theme.fg("dim", "Enter to confirm • Esc back")));
+		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+	}
+
+	handleInput(keyData: string): void {
+		this.selectList.handleInput(keyData);
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+	}
+}
+
+class TodoDeleteConfirmComponent extends Container {
+	private selectList: SelectList;
+	private onConfirm: (confirmed: boolean) => void;
+
+	constructor(theme: Theme, message: string, onConfirm: (confirmed: boolean) => void) {
+		super();
+		this.onConfirm = onConfirm;
+
+		const options: SelectItem[] = [
+			{ value: "yes", label: "Yes" },
+			{ value: "no", label: "No" },
+		];
+
+		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		this.addChild(new Text(theme.fg("accent", message)));
+
+		this.selectList = new SelectList(options, options.length, {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", text),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		});
+
+		this.selectList.onSelect = (item) => this.onConfirm(item.value === "yes");
+		this.selectList.onCancel = () => this.onConfirm(false);
+
+		this.addChild(this.selectList);
+		this.addChild(new Text(theme.fg("dim", "Enter to confirm • Esc back")));
+		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+	}
+
+	handleInput(keyData: string): void {
+		this.selectList.handleInput(keyData);
+	}
+
+	override invalidate(): void {
+		super.invalidate();
+	}
+}
+
 class TodoDetailOverlayComponent {
 	private todo: TodoRecord;
 	private theme: Theme;
@@ -393,7 +504,11 @@ class TodoDetailOverlayComponent {
 	handleInput(keyData: string): void {
 		const kb = getEditorKeybindings();
 		if (kb.matches(keyData, "selectCancel")) {
-			this.onAction("cancel");
+			this.onAction("back");
+			return;
+		}
+		if (kb.matches(keyData, "selectConfirm")) {
+			this.onAction("work");
 			return;
 		}
 		if (kb.matches(keyData, "selectUp")) {
@@ -410,30 +525,6 @@ class TodoDetailOverlayComponent {
 		}
 		if (kb.matches(keyData, "selectPageDown")) {
 			this.scrollBy(this.viewHeight || 1);
-			return;
-		}
-		if (keyData === "r" || keyData === "R") {
-			this.onAction("refine");
-			return;
-		}
-		if (keyData === "c" || keyData === "C") {
-			this.onAction("close");
-			return;
-		}
-		if (keyData === "o" || keyData === "O") {
-			this.onAction("reopen");
-			return;
-		}
-		if (keyData === "w" || keyData === "W") {
-			this.onAction("work");
-			return;
-		}
-		if (keyData === "a" || keyData === "A") {
-			this.onAction("actions");
-			return;
-		}
-		if (keyData === "d" || keyData === "D") {
-			this.onAction("delete");
 			return;
 		}
 	}
@@ -521,16 +612,9 @@ class TodoDetailOverlayComponent {
 	}
 
 	private buildActionLine(width: number): string {
-		const closed = isTodoClosed(this.todo.status);
-		const refine = this.theme.fg("accent", "r") + this.theme.fg("muted", " refine task");
-		const work = this.theme.fg("accent", "w") + this.theme.fg("muted", " work on todo");
-		const close = this.theme.fg("accent", "c") + this.theme.fg("muted", " close task");
-		const reopen = this.theme.fg("accent", "o") + this.theme.fg("muted", " reopen task");
-		const statusAction = closed ? reopen : close;
-		const actions = this.theme.fg("accent", "a") + this.theme.fg("muted", " actions");
-		const del = this.theme.fg("error", "d") + this.theme.fg("muted", " delete todo");
+		const work = this.theme.fg("accent", "enter") + this.theme.fg("muted", " work on todo");
 		const back = this.theme.fg("dim", "esc back");
-		const pieces = [work, refine, statusAction, actions, del, back];
+		const pieces = [work, back];
 
 		let line = pieces.join(this.theme.fg("muted", " • "));
 		if (this.totalLines > this.viewHeight) {
@@ -1468,6 +1552,37 @@ export default function todosExtension(pi: ExtensionAPI) {
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 				rootTui = tui;
 				let selector: TodoSelectorComponent | null = null;
+				let actionMenu: TodoActionMenuComponent | null = null;
+				let deleteConfirm: TodoDeleteConfirmComponent | null = null;
+				let activeComponent:
+					| {
+							render: (width: number) => string[];
+							invalidate: () => void;
+							handleInput?: (data: string) => void;
+							focused?: boolean;
+						}
+					| null = null;
+				let wrapperFocused = false;
+
+				const setActiveComponent = (
+					component:
+						| {
+								render: (width: number) => string[];
+								invalidate: () => void;
+								handleInput?: (data: string) => void;
+								focused?: boolean;
+							}
+						| null,
+				) => {
+					if (activeComponent && "focused" in activeComponent) {
+						activeComponent.focused = false;
+					}
+					activeComponent = component;
+					if (activeComponent && "focused" in activeComponent) {
+						activeComponent.focused = wrapperFocused;
+					}
+					tui.requestRender();
+				};
 
 				const addTodoPathToPrompt = (todoId: string) => {
 					const filePath = getTodoPath(todosDir, todoId);
@@ -1491,7 +1606,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					return record;
 				};
 
-				const openTodoOverlay = async (record: TodoRecord) => {
+				const openTodoOverlay = async (record: TodoRecord): Promise<TodoOverlayAction> => {
 					const action = await ctx.ui.custom<TodoOverlayAction>(
 						(overlayTui, overlayTheme, _overlayKb, overlayDone) =>
 							new TodoDetailOverlayComponent(overlayTui, overlayTheme, record, overlayDone),
@@ -1501,61 +1616,50 @@ export default function todosExtension(pi: ExtensionAPI) {
 						},
 					);
 
-					if (!action || action === "cancel") return;
-					if (action === "actions") {
-						await showActionMenu(record);
-						return;
-					}
-					await applyTodoAction(record, action);
+					return action ?? "back";
 				};
 
-				const applyTodoAction = async (record: TodoRecord, action: TodoMenuAction) => {
-					if (action === "cancel") return;
+				const applyTodoAction = async (
+					record: TodoRecord,
+					action: TodoMenuAction,
+				): Promise<"stay" | "exit"> => {
 					if (action === "refine") {
 						const title = record.title || "(untitled)";
 						nextPrompt = buildRefinePrompt(record.id, title);
 						done();
-						return;
+						return "exit";
 					}
 					if (action === "work") {
 						const title = record.title || "(untitled)";
 						nextPrompt = `work on todo ${formatTodoId(record.id)} "${title}"`;
 						done();
-						return;
+						return "exit";
 					}
 					if (action === "view") {
-						await openTodoOverlay(record);
-						return;
+						return "stay";
 					}
 					if (action === "copy-path") {
 						addTodoPathToPrompt(record.id);
-						return;
+						return "stay";
 					}
 
 					if (action === "delete") {
-						const ok = await ctx.ui.confirm(
-							"Delete todo",
-							`Delete todo ${formatTodoId(record.id)}? This cannot be undone.`,
-						);
-						if (!ok) {
-							return;
-						}
 						const result = await deleteTodo(todosDir, record.id, ctx);
 						if ("error" in result) {
 							ctx.ui.notify(result.error, "error");
-							return;
+							return "stay";
 						}
 						const updatedTodos = await listTodos(todosDir);
 						selector?.setTodos(updatedTodos);
 						ctx.ui.notify(`Deleted todo ${formatTodoId(record.id)}`, "info");
-						return;
+						return "stay";
 					}
 
 					const nextStatus = action === "close" ? "closed" : "open";
 					const result = await updateTodoStatus(todosDir, record.id, nextStatus, ctx);
 					if ("error" in result) {
 						ctx.ui.notify(result.error, "error");
-						return;
+						return "stay";
 					}
 
 					const updatedTodos = await listTodos(todosDir);
@@ -1564,89 +1668,58 @@ export default function todosExtension(pi: ExtensionAPI) {
 						`${action === "close" ? "Closed" : "Reopened"} todo ${formatTodoId(record.id)}`,
 						"info",
 					);
+					return "stay";
+				};
+
+				const handleActionSelection = async (record: TodoRecord, action: TodoMenuAction) => {
+					if (action === "view") {
+						const overlayAction = await openTodoOverlay(record);
+						if (overlayAction === "work") {
+							await applyTodoAction(record, "work");
+							return;
+						}
+						if (actionMenu) {
+							setActiveComponent(actionMenu);
+						}
+						return;
+					}
+
+					if (action === "delete") {
+						const message = `Delete todo ${formatTodoId(record.id)}? This cannot be undone.`;
+						deleteConfirm = new TodoDeleteConfirmComponent(theme, message, (confirmed) => {
+							if (!confirmed) {
+								setActiveComponent(actionMenu);
+								return;
+							}
+							void (async () => {
+								await applyTodoAction(record, "delete");
+								setActiveComponent(selector);
+							})();
+						});
+						setActiveComponent(deleteConfirm);
+						return;
+					}
+
+					const result = await applyTodoAction(record, action);
+					if (result === "stay") {
+						setActiveComponent(selector);
+					}
 				};
 
 				const showActionMenu = async (todo: TodoFrontMatter | TodoRecord) => {
 					const record = "body" in todo ? todo : await resolveTodoRecord(todo);
 					if (!record) return;
-					const closed = isTodoClosed(getTodoStatus(record));
-					const options: SelectItem[] = [
-						{ value: "view", label: "view", description: "View todo" },
-						{ value: "work", label: "work", description: "Work on todo" },
-						{ value: "refine", label: "refine", description: "Refine task" },
-						...(closed
-							? [{ value: "reopen", label: "reopen", description: "Reopen todo" }]
-							: [{ value: "close", label: "close", description: "Close todo" }]),
-						{ value: "copy-path", label: "copy", description: "Copy path to prompt" },
-						{ value: "delete", label: "delete", description: "Delete todo" },
-					];
-					const title = record.title || "(untitled)";
-					const selection = await ctx.ui.custom<TodoMenuAction | null>(
-						(overlayTui, overlayTheme, _overlayKb, overlayDone) => {
-							const container = new Container();
-							container.addChild(
-								new Text(
-									overlayTheme.fg(
-										"accent",
-										overlayTheme.bold(`Actions for ${formatTodoId(record.id)} "${title}"`),
-									),
-								),
-							);
-							container.addChild(new Spacer(1));
-
-							const selectList = new SelectList(options, options.length, {
-								selectedPrefix: (text) => overlayTheme.fg("accent", text),
-								selectedText: (text) => overlayTheme.fg("accent", text),
-								description: (text) => overlayTheme.fg("muted", text),
-								scrollInfo: (text) => overlayTheme.fg("dim", text),
-								noMatch: (text) => overlayTheme.fg("warning", text),
-							});
-
-							selectList.onSelect = (item) => overlayDone(item.value as TodoMenuAction);
-							selectList.onCancel = () => overlayDone(null);
-
-							container.addChild(selectList);
-							container.addChild(new Spacer(1));
-							container.addChild(
-								new Text(overlayTheme.fg("dim", "Press enter to confirm or esc to cancel")),
-							);
-
-							return {
-								render(width: number) {
-									const innerWidth = Math.max(10, width - 2);
-									const contentLines = container.render(innerWidth);
-									const borderColor = (text: string) => overlayTheme.fg("accent", text);
-									const top = borderColor(`┌${"─".repeat(innerWidth)}┐`);
-									const bottom = borderColor(`└${"─".repeat(innerWidth)}┘`);
-									const framed = contentLines.map((line) => {
-										const truncated = truncateToWidth(line, innerWidth);
-										const padding = Math.max(0, innerWidth - visibleWidth(truncated));
-										return (
-											borderColor("│") + truncated + " ".repeat(padding) + borderColor("│")
-										);
-									});
-									return [top, ...framed, bottom].map((line) => truncateToWidth(line, width));
-								},
-								invalidate() {
-									container.invalidate();
-								},
-								handleInput(data: string) {
-									selectList.handleInput(data);
-									overlayTui.requestRender();
-								},
-							};
+					actionMenu = new TodoActionMenuComponent(
+						theme,
+						record,
+						(action) => {
+							void handleActionSelection(record, action);
 						},
-						{
-							overlay: true,
-							overlayOptions: { width: "70%", maxHeight: "60%", anchor: "center" },
+						() => {
+							setActiveComponent(selector);
 						},
 					);
-
-					if (!selection) {
-						tui.requestRender();
-						return;
-					}
-					await applyTodoAction(record, selection);
+					setActiveComponent(actionMenu);
 				};
 
 				const handleSelect = async (todo: TodoFrontMatter) => {
@@ -1672,7 +1745,30 @@ export default function todosExtension(pi: ExtensionAPI) {
 					},
 				);
 
-				return selector;
+				setActiveComponent(selector);
+
+				const rootComponent = {
+					get focused() {
+						return wrapperFocused;
+					},
+					set focused(value: boolean) {
+						wrapperFocused = value;
+						if (activeComponent && "focused" in activeComponent) {
+							activeComponent.focused = value;
+						}
+					},
+					render(width: number) {
+						return activeComponent ? activeComponent.render(width) : [];
+					},
+					invalidate() {
+						activeComponent?.invalidate();
+					},
+					handleInput(data: string) {
+						activeComponent?.handleInput?.(data);
+					},
+				};
+
+				return rootComponent;
 			});
 
 			if (nextPrompt) {
