@@ -1581,13 +1581,15 @@ export default function todosExtension(pi: ExtensionAPI) {
 				const showActionMenu = async (todo: TodoFrontMatter | TodoRecord) => {
 					const record = "body" in todo ? todo : await resolveTodoRecord(todo);
 					if (!record) return;
+					const closed = isTodoClosed(getTodoStatus(record));
 					const options: SelectItem[] = [
 						{ value: "view", label: "view", description: "View todo" },
 						{ value: "work", label: "work", description: "Work on todo" },
 						{ value: "refine", label: "refine", description: "Refine task" },
-						{ value: "close", label: "close", description: "Close todo" },
-						{ value: "reopen", label: "reopen", description: "Reopen todo" },
-						{ value: "copy-path", label: "copy", description: "Copy todo path into prompt" },
+						...(closed
+							? [{ value: "reopen", label: "reopen", description: "Reopen todo" }]
+							: [{ value: "close", label: "close", description: "Close todo" }]),
+						{ value: "copy-path", label: "copy", description: "Copy path to prompt" },
 						{ value: "delete", label: "delete", description: "Delete todo" },
 					];
 					const title = record.title || "(untitled)";
