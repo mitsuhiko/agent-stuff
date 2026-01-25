@@ -1017,8 +1017,8 @@ function formatTodoHeading(todo: TodoFrontMatter): string {
 function buildRefinePrompt(todoId: string, title: string): string {
 	return (
 		`let's refine task ${formatTodoId(todoId)} "${title}": ` +
-		"Please rewrite the todo body with a thorough, structured description so an engineer or agent can work without extra investigation. " +
-		"Include: Context, Goals, Scope/Non-scope, Checklist, Acceptance Criteria, and Risks/Open questions.\n\n"
+		"Ask me for the missing details needed to refine the todo together. Do not rewrite the todo yet and do not make assumptions. " +
+		"Ask clear, concrete questions and wait for my answers before drafting any structured description.\n\n"
 	);
 }
 
