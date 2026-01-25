@@ -1,11 +1,33 @@
 /**
- * Todo storage settings are kept in <todo-dir>/settings.json.
+ * This extension stores todo items as files under <todo-dir> (defaults to .pi/todos,
+ * or the path in PI_TODO_PATH).  Each todo is a standalone markdown file named
+ * <id>.md and an optional <id>.lock file is used while a session is editing it.
  *
+ * File format in .pi/todos:
+ * - The file starts with a JSON object (not YAML) containing the front matter:
+ *   { id, title, tags, status, created_at, assigned_to_session }
+ * - After the JSON block comes optional markdown body text separated by a blank line.
+ * - Example:
+ *   {
+ *     "id": "deadbeef",
+ *     "title": "Add tests",
+ *     "tags": ["qa"],
+ *     "status": "open",
+ *     "created_at": "2026-01-25T17:00:00.000Z",
+ *     "assigned_to_session": "session.json"
+ *   }
+ *
+ *   Notes about the work go here.
+ *
+ * Todo storage settings are kept in <todo-dir>/settings.json.
  * Defaults:
  * {
  *   "gc": true,   // delete closed todos older than gcDays on startup
  *   "gcDays": 7   // age threshold for GC (days since created_at)
  * }
+ *
+ * Use `/todos` to bring up the visual todo manager or just let the LLM use them
+ * naturally.
  */
 import { DynamicBorder, copyToClipboard, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
@@ -33,7 +55,7 @@ import {
 } from "@mariozechner/pi-tui";
 
 const TODO_DIR_NAME = ".pi/todos";
-const TODO_PATH_ENV = "PI_ISSUE_PATH";
+const TODO_PATH_ENV = "PI_TODO_PATH";
 const TODO_SETTINGS_NAME = "settings.json";
 const TODO_ID_PREFIX = "TODO-";
 const TODO_ID_PATTERN = /^[a-f0-9]{8}$/i;
