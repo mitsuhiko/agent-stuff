@@ -909,6 +909,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 						if (params.title !== undefined) existing.title = params.title;
 						if (params.status !== undefined) existing.status = params.status;
 						if (params.tags !== undefined) existing.tags = params.tags;
+					if (params.body !== undefined) existing.body = params.body;
 						if (!existing.created_at) existing.created_at = new Date().toISOString();
 
 						await writeTodoFile(filePath, existing);
