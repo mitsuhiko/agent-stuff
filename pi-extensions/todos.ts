@@ -84,7 +84,7 @@ type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" |
 
 type TodoOverlayAction = "work" | "refine" | "close" | "reopen" | "delete" | "cancel" | "actions";
 
-type TodoMenuAction = TodoOverlayAction | "copy-path" | "close-dialog" | "view";
+type TodoMenuAction = TodoOverlayAction | "copy-path" | "view";
 
 type TodoToolDetails =
 	| { action: "list" | "list-all"; todos: TodoFrontMatter[]; error?: string }
@@ -1512,10 +1512,6 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 				const applyTodoAction = async (record: TodoRecord, action: TodoMenuAction) => {
 					if (action === "cancel") return;
-					if (action === "close-dialog") {
-						done();
-						return;
-					}
 					if (action === "refine") {
 						const title = record.title || "(untitled)";
 						nextPrompt = buildRefinePrompt(record.id, title);
