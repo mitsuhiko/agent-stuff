@@ -1372,7 +1372,9 @@ export default function todosExtension(pi: ExtensionAPI) {
 			}
 
 			let nextPrompt: string | null = null;
+			let rootTui: TUI | null = null;
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+				rootTui = tui;
 				let selector: TodoSelectorComponent | null = null;
 
 				const addTodoPathToPrompt = (todoId: string) => {
@@ -1583,6 +1585,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 			if (nextPrompt) {
 				ctx.ui.setEditorText(nextPrompt);
+				rootTui?.requestRender();
 			}
 		},
 	});
