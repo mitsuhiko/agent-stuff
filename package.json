@@ -10,9 +10,9 @@
     "pi-theme"
   ],
   "pi": {
-    "extensions": ["./pi-extensions/*.ts"],
+    "extensions": ["./pi-extensions"],
     "skills": ["./skills"],
-    "themes": ["./pi-themes/*.json"]
+    "themes": ["./pi-themes"]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
