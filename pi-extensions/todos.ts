@@ -1,4 +1,4 @@
-import { DynamicBorder, getMarkdownTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import path from "node:path";
@@ -773,9 +773,9 @@ function getTodoStatus(todo: TodoFrontMatter): string {
 	return todo.status || "open";
 }
 
-function formatTodoSummaryLine(todo: TodoFrontMatter): string {
+function formatTodoHeading(todo: TodoFrontMatter): string {
 	const tagText = todo.tags.length ? ` [${todo.tags.join(", ")}]` : "";
-	return `#${todo.id} (${getTodoStatus(todo)}) ${getTodoTitle(todo)}${tagText}`;
+	return `#${todo.id} ${getTodoTitle(todo)}${tagText}`;
 }
 
 function splitTodosByStatus(todos: TodoFrontMatter[]): { openTodos: TodoFrontMatter[]; closedTodos: TodoFrontMatter[] } {
@@ -794,7 +794,7 @@ function splitTodosByStatus(todos: TodoFrontMatter[]): { openTodos: TodoFrontMat
 function formatTodoList(todos: TodoFrontMatter[]): string {
 	if (!todos.length) return "No todos.";
 
-	const { openTodos, closedTodos } = splitTodosByStatus(todos);
+	const { openTodos } = splitTodosByStatus(todos);
 	const lines: string[] = [];
 	const pushSection = (label: string, sectionTodos: TodoFrontMatter[]) => {
 		lines.push(`${label} (${sectionTodos.length}):`);
@@ -803,29 +803,28 @@ function formatTodoList(todos: TodoFrontMatter[]): string {
 			return;
 		}
 		for (const todo of sectionTodos) {
-			lines.push(`  ${formatTodoSummaryLine(todo)}`);
+			lines.push(`  ${formatTodoHeading(todo)}`);
 		}
 	};
 
 	pushSection("Open todos", openTodos);
-	lines.push("");
-	pushSection("Closed todos", closedTodos);
 	return lines.join("\n");
 }
 
-function renderTodoSummaryLine(theme: Theme, todo: TodoFrontMatter): string {
+function serializeTodoForAgent(todo: TodoRecord): string {
+	return JSON.stringify(todo, null, 2);
+}
+
+function serializeTodoListForAgent(todos: TodoFrontMatter[]): string {
+	const { openTodos, closedTodos } = splitTodosByStatus(todos);
+	return JSON.stringify({ open: openTodos, closed: closedTodos }, null, 2);
+}
+
+function renderTodoHeading(theme: Theme, todo: TodoFrontMatter): string {
 	const closed = isTodoClosed(getTodoStatus(todo));
-	const statusColor = closed ? "dim" : "success";
-	const titleColor = closed ? "dim" : "fg";
+	const titleColor = closed ? "dim" : "text";
 	const tagText = todo.tags.length ? theme.fg("dim", ` [${todo.tags.join(", ")}]`) : "";
-	return (
-		theme.fg("accent", `#${todo.id}`) +
-		" " +
-		theme.fg(titleColor, getTodoTitle(todo)) +
-		" " +
-		theme.fg(statusColor, `(${getTodoStatus(todo)})`) +
-		tagText
-	);
+	return theme.fg("accent", `#${todo.id}`) + " " + theme.fg(titleColor, getTodoTitle(todo)) + tagText;
 }
 
 function renderTodoList(theme: Theme, todos: TodoFrontMatter[], expanded: boolean): string {
@@ -841,7 +840,7 @@ function renderTodoList(theme: Theme, todos: TodoFrontMatter[], expanded: boolea
 		}
 		const maxItems = expanded ? sectionTodos.length : Math.min(sectionTodos.length, 3);
 		for (let i = 0; i < maxItems; i++) {
-			lines.push(`  ${renderTodoSummaryLine(theme, sectionTodos[i])}`);
+			lines.push(`  ${renderTodoHeading(theme, sectionTodos[i])}`);
 		}
 		if (!expanded && sectionTodos.length > maxItems) {
 			lines.push(theme.fg("dim", `  ... ${sectionTodos.length - maxItems} more`));
@@ -849,13 +848,15 @@ function renderTodoList(theme: Theme, todos: TodoFrontMatter[], expanded: boolea
 	};
 
 	pushSection("Open todos", openTodos);
-	lines.push("");
-	pushSection("Closed todos", closedTodos);
+	if (expanded && closedTodos.length) {
+		lines.push("");
+		pushSection("Closed todos", closedTodos);
+	}
 	return lines.join("\n");
 }
 
 function renderTodoDetail(theme: Theme, todo: TodoRecord, expanded: boolean): string {
-	const summary = renderTodoSummaryLine(theme, todo);
+	const summary = renderTodoHeading(theme, todo);
 	if (!expanded) return summary;
 
 	const tags = todo.tags.length ? todo.tags.join(", ") : "none";
@@ -870,10 +871,14 @@ function renderTodoDetail(theme: Theme, todo: TodoRecord, expanded: boolean): st
 		theme.fg("muted", `Created: ${createdAt}`),
 		"",
 		theme.fg("muted", "Body:"),
-		...bodyLines.map((line) => theme.fg("fg", `  ${line}`)),
+		...bodyLines.map((line) => theme.fg("text", `  ${line}`)),
 	];
 
 	return lines.join("\n");
+}
+
+function appendExpandHint(theme: Theme, text: string): string {
+	return `${text}\n${theme.fg("dim", `(${keyHint("expandTools", "to expand")})`)}`;
 }
 
 async function ensureTodoExists(filePath: string, id: string): Promise<TodoRecord | null> {
@@ -929,7 +934,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 				case "list": {
 					const todos = await listTodos(todosDir);
 					return {
-						content: [{ type: "text", text: formatTodoList(todos) }],
+						content: [{ type: "text", text: serializeTodoListForAgent(todos) }],
 						details: { action: "list", todos },
 					};
 				}
@@ -950,7 +955,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 						};
 					}
 					return {
-						content: [{ type: "text", text: formatTodoSummaryLine(todo) }],
+						content: [{ type: "text", text: serializeTodoForAgent(todo) }],
 						details: { action: "get", todo },
 					};
 				}
@@ -987,7 +992,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					}
 
 					return {
-						content: [{ type: "text", text: `Created ${formatTodoSummaryLine(todo)}` }],
+						content: [{ type: "text", text: serializeTodoForAgent(todo) }],
 						details: { action: "create", todo },
 					};
 				}
@@ -1030,7 +1035,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 					const updatedTodo = result as TodoRecord;
 					return {
-						content: [{ type: "text", text: `Updated ${formatTodoSummaryLine(updatedTodo)}` }],
+						content: [{ type: "text", text: serializeTodoForAgent(updatedTodo) }],
 						details: { action: "update", todo: updatedTodo },
 					};
 				}
@@ -1071,7 +1076,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 					const updatedTodo = result as TodoRecord;
 					return {
-						content: [{ type: "text", text: `Appended to ${formatTodoSummaryLine(updatedTodo)}` }],
+						content: [{ type: "text", text: serializeTodoForAgent(updatedTodo) }],
 						details: { action: "append", todo: updatedTodo },
 					};
 				}
@@ -1092,8 +1097,11 @@ export default function todosExtension(pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, { expanded, isPartial }, theme) {
 			const details = result.details as TodoToolDetails | undefined;
+			if (isPartial) {
+				return new Text(theme.fg("warning", "Processing..."), 0, 0);
+			}
 			if (!details) {
 				const text = result.content[0];
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
@@ -1104,7 +1112,14 @@ export default function todosExtension(pi: ExtensionAPI) {
 			}
 
 			if (details.action === "list") {
-				return new Text(renderTodoList(theme, details.todos, expanded), 0, 0);
+				let text = renderTodoList(theme, details.todos, expanded);
+				if (!expanded) {
+					const { closedTodos } = splitTodosByStatus(details.todos);
+					if (closedTodos.length) {
+						text = appendExpandHint(theme, text);
+					}
+				}
+				return new Text(text, 0, 0);
 			}
 
 			if (!details.todo) {
@@ -1125,6 +1140,9 @@ export default function todosExtension(pi: ExtensionAPI) {
 				const lines = text.split("\n");
 				lines[0] = theme.fg("success", "✓ ") + theme.fg("muted", `${actionLabel} `) + lines[0];
 				text = lines.join("\n");
+			}
+			if (!expanded) {
+				text = appendExpandHint(theme, text);
 			}
 			return new Text(text, 0, 0);
 		},
