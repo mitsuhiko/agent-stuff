@@ -22,6 +22,7 @@ import {
 } from "@mariozechner/pi-tui";
 
 const TODO_DIR_NAME = ".pi/todos";
+const TODO_PATH_ENV = "PI_ISSUE_PATH";
 const LOCK_TTL_MS = 30 * 60 * 1000;
 
 interface TodoFrontMatter {
@@ -488,6 +489,10 @@ class TodoDetailOverlayComponent {
 }
 
 function getTodosDir(cwd: string): string {
+	const overridePath = process.env[TODO_PATH_ENV];
+	if (overridePath && overridePath.trim()) {
+		return path.resolve(cwd, overridePath.trim());
+	}
 	return path.resolve(cwd, TODO_DIR_NAME);
 }
 
@@ -968,7 +973,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). Close todos when the work is done.",
+		description: "Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). Close todos when the work is done. Set PI_ISSUE_PATH to override the todo directory.",
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _onUpdate, ctx) {
