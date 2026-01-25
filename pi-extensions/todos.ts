@@ -637,24 +637,6 @@ function getLockPath(todosDir: string, id: string): string {
 	return path.join(todosDir, `${id}.lock`);
 }
 
-function stripQuotes(value: string): string {
-	const trimmed = value.trim();
-	if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-		return trimmed.slice(1, -1);
-	}
-	return trimmed;
-}
-
-function parseTagsInline(value: string): string[] {
-	const inner = value.trim().slice(1, -1);
-	if (!inner.trim()) return [];
-	return inner
-		.split(",")
-		.map((item) => stripQuotes(item))
-		.map((item) => item.trim())
-		.filter(Boolean);
-}
-
 function parseFrontMatter(text: string, idFallback: string): TodoFrontMatter {
 	const data: TodoFrontMatter = {
 		id: idFallback,
@@ -664,65 +646,80 @@ function parseFrontMatter(text: string, idFallback: string): TodoFrontMatter {
 		created_at: "",
 	};
 
-	let currentKey: string | null = null;
-	for (const rawLine of text.split(/\r?\n/)) {
-		const line = rawLine.trim();
-		if (!line) continue;
+	const trimmed = text.trim();
+	if (!trimmed) return data;
 
-		const listMatch = currentKey === "tags" ? line.match(/^-\s*(.+)$/) : null;
-		if (listMatch) {
-			data.tags.push(stripQuotes(listMatch[1]));
-			continue;
+	try {
+		const parsed = JSON.parse(trimmed) as Partial<TodoFrontMatter> | null;
+		if (!parsed || typeof parsed !== "object") return data;
+		if (typeof parsed.id === "string" && parsed.id) data.id = parsed.id;
+		if (typeof parsed.title === "string") data.title = parsed.title;
+		if (typeof parsed.status === "string" && parsed.status) data.status = parsed.status;
+		if (typeof parsed.created_at === "string") data.created_at = parsed.created_at;
+		if (Array.isArray(parsed.tags)) {
+			data.tags = parsed.tags.filter((tag): tag is string => typeof tag === "string");
 		}
-
-		const match = line.match(/^(?<key>[a-zA-Z0-9_]+):\s*(?<value>.*)$/);
-		if (!match?.groups) continue;
-
-		const key = match.groups.key;
-		const value = match.groups.value ?? "";
-		currentKey = null;
-
-		if (key === "tags") {
-			if (!value) {
-				currentKey = "tags";
-				continue;
-			}
-			if (value.startsWith("[") && value.endsWith("]")) {
-				data.tags = parseTagsInline(value);
-				continue;
-			}
-			data.tags = [stripQuotes(value)].filter(Boolean);
-			continue;
-		}
-
-		switch (key) {
-			case "id":
-				data.id = stripQuotes(value) || data.id;
-				break;
-			case "title":
-				data.title = stripQuotes(value);
-				break;
-			case "status":
-				data.status = stripQuotes(value) || data.status;
-				break;
-			case "created_at":
-				data.created_at = stripQuotes(value);
-				break;
-			default:
-				break;
-		}
+	} catch {
+		return data;
 	}
 
 	return data;
 }
 
+function findJsonObjectEnd(content: string): number {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+
+	for (let i = 0; i < content.length; i += 1) {
+		const char = content[i];
+
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (char === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (char === "\"") {
+				inString = false;
+			}
+			continue;
+		}
+
+		if (char === "\"") {
+			inString = true;
+			continue;
+		}
+
+		if (char === "{") {
+			depth += 1;
+			continue;
+		}
+
+		if (char === "}") {
+			depth -= 1;
+			if (depth === 0) return i;
+		}
+	}
+
+	return -1;
+}
+
 function splitFrontMatter(content: string): { frontMatter: string; body: string } {
-	const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-	if (!match) {
+	if (!content.startsWith("{")) {
 		return { frontMatter: "", body: content };
 	}
-	const frontMatter = match[1] ?? "";
-	const body = content.slice(match[0].length);
+
+	const endIndex = findJsonObjectEnd(content);
+	if (endIndex === -1) {
+		return { frontMatter: "", body: content };
+	}
+
+	const frontMatter = content.slice(0, endIndex + 1);
+	const body = content.slice(endIndex + 1).replace(/^\r?\n+/, "");
 	return { frontMatter, body };
 }
 
@@ -739,27 +736,23 @@ function parseTodoContent(content: string, idFallback: string): TodoRecord {
 	};
 }
 
-function escapeYaml(value: string): string {
-	return value.replace(/\\/g, "\\\\").replace(/\"/g, "\\\"");
-}
-
 function serializeTodo(todo: TodoRecord): string {
-	const tags = todo.tags ?? [];
-	const lines = [
-		"---",
-		`id: \"${escapeYaml(todo.id)}\"`,
-		`title: \"${escapeYaml(todo.title)}\"`,
-		"tags:",
-		...tags.map((tag) => `  - \"${escapeYaml(tag)}\"`),
-		`status: \"${escapeYaml(todo.status)}\"`,
-		`created_at: \"${escapeYaml(todo.created_at)}\"`,
-		"---",
-		"",
-	];
+	const frontMatter = JSON.stringify(
+		{
+			id: todo.id,
+			title: todo.title,
+			tags: todo.tags ?? [],
+			status: todo.status,
+			created_at: todo.created_at,
+		},
+		null,
+		2,
+	);
 
 	const body = todo.body ?? "";
 	const trimmedBody = body.replace(/^\n+/, "").replace(/\s+$/, "");
-	return `${lines.join("\n")}${trimmedBody ? `${trimmedBody}\n` : ""}`;
+	if (!trimmedBody) return `${frontMatter}\n`;
+	return `${frontMatter}\n\n${trimmedBody}\n`;
 }
 
 async function ensureTodosDir(todosDir: string) {
