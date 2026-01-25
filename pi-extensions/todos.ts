@@ -35,6 +35,7 @@ import {
 const TODO_DIR_NAME = ".pi/todos";
 const TODO_PATH_ENV = "PI_ISSUE_PATH";
 const TODO_SETTINGS_NAME = "settings.json";
+const TODO_ID_PREFIX = "TODO-";
 const DEFAULT_TODO_SETTINGS = {
 	gc: true,
 	gcDays: 7,
@@ -67,7 +68,9 @@ interface TodoSettings {
 
 const TodoParams = Type.Object({
 	action: StringEnum(["list", "list-all", "get", "create", "update", "append", "delete"] as const),
-	id: Type.Optional(Type.String({ description: "Todo id (filename)" })),
+	id: Type.Optional(
+		Type.String({ description: "Todo id (TODO-<hex> or raw hex filename)" }),
+	),
 	title: Type.Optional(Type.String({ description: "Todo title" })),
 	status: Type.Optional(Type.String({ description: "Todo status" })),
 	tags: Type.Optional(Type.Array(Type.String({ description: "Todo tag" }))),
@@ -78,11 +81,30 @@ type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" |
 
 type TodoOverlayAction = "work" | "refine" | "close" | "reopen" | "delete" | "cancel" | "actions";
 
-type TodoMenuAction = TodoOverlayAction | "copy-path" | "close-dialog";
+type TodoMenuAction = TodoOverlayAction | "copy-path" | "close-dialog" | "view";
 
 type TodoToolDetails =
 	| { action: "list" | "list-all"; todos: TodoFrontMatter[]; error?: string }
 	| { action: "get" | "create" | "update" | "append" | "delete"; todo: TodoRecord; error?: string };
+
+function formatTodoId(id: string): string {
+	return `${TODO_ID_PREFIX}${id}`;
+}
+
+function normalizeTodoId(id: string): string {
+	let trimmed = id.trim();
+	if (trimmed.startsWith("#")) {
+		trimmed = trimmed.slice(1);
+	}
+	if (trimmed.toUpperCase().startsWith(TODO_ID_PREFIX)) {
+		trimmed = trimmed.slice(TODO_ID_PREFIX.length);
+	}
+	return trimmed;
+}
+
+function displayTodoId(id: string): string {
+	return formatTodoId(normalizeTodoId(id));
+}
 
 function isTodoClosed(status: string): boolean {
 	return ["closed", "done"].includes(status.toLowerCase());
@@ -99,7 +121,7 @@ function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 
 function buildTodoSearchText(todo: TodoFrontMatter): string {
 	const tags = todo.tags.join(" ");
-	return `${todo.id} ${todo.title} ${tags} ${todo.status}`.trim();
+	return `${formatTodoId(todo.id)} ${todo.id} ${todo.title} ${tags} ${todo.status}`.trim();
 }
 
 function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[] {
@@ -271,7 +293,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 			const tagText = todo.tags.length ? ` [${todo.tags.join(", ")}]` : "";
 			const line =
 				prefix +
-				this.theme.fg("accent", `#${todo.id}`) +
+				this.theme.fg("accent", formatTodoId(todo.id)) +
 				" " +
 				this.theme.fg(titleColor, todo.title || "(untitled)") +
 				this.theme.fg("muted", tagText) +
@@ -464,7 +486,9 @@ class TodoDetailOverlayComponent {
 	}
 
 	private buildTitleLine(width: number): string {
-		const titleText = this.todo.title ? ` ${this.todo.title} ` : ` Todo #${this.todo.id} `;
+		const titleText = this.todo.title
+			? ` ${this.todo.title} `
+			: ` Todo ${formatTodoId(this.todo.id)} `;
 		const titleWidth = visibleWidth(titleText);
 		if (titleWidth >= width) {
 			return truncateToWidth(this.theme.fg("accent", titleText.trim()), width);
@@ -483,7 +507,7 @@ class TodoDetailOverlayComponent {
 		const statusColor = isTodoClosed(status) ? "dim" : "success";
 		const tagText = this.todo.tags.length ? this.todo.tags.join(", ") : "no tags";
 		const line =
-			this.theme.fg("accent", `#${this.todo.id}`) +
+			this.theme.fg("accent", formatTodoId(this.todo.id)) +
 			this.theme.fg("muted", " • ") +
 			this.theme.fg(statusColor, status) +
 			this.theme.fg("muted", " • ") +
@@ -800,20 +824,23 @@ async function acquireLock(
 			if (lockAge <= LOCK_TTL_MS) {
 				const info = await readLockInfo(lockPath);
 				const owner = info?.session ? ` (session ${info.session})` : "";
-				return { error: `Todo ${id} is locked${owner}. Try again later.` };
+				return { error: `Todo ${displayTodoId(id)} is locked${owner}. Try again later.` };
 			}
 			if (!ctx.hasUI) {
-				return { error: `Todo ${id} lock is stale; rerun in interactive mode to steal it.` };
+				return { error: `Todo ${displayTodoId(id)} lock is stale; rerun in interactive mode to steal it.` };
 			}
-			const ok = await ctx.ui.confirm("Todo locked", `Todo ${id} appears locked. Steal the lock?`);
+			const ok = await ctx.ui.confirm(
+				"Todo locked",
+				`Todo ${displayTodoId(id)} appears locked. Steal the lock?`,
+			);
 			if (!ok) {
-				return { error: `Todo ${id} remains locked.` };
+				return { error: `Todo ${displayTodoId(id)} remains locked.` };
 			}
 			await fs.unlink(lockPath).catch(() => undefined);
 		}
 	}
 
-	return { error: `Failed to acquire lock for todo ${id}.` };
+	return { error: `Failed to acquire lock for todo ${displayTodoId(id)}.` };
 }
 
 async function withTodoLock<T>(
@@ -905,7 +932,7 @@ function getTodoStatus(todo: TodoFrontMatter): string {
 
 function formatTodoHeading(todo: TodoFrontMatter): string {
 	const tagText = todo.tags.length ? ` [${todo.tags.join(", ")}]` : "";
-	return `#${todo.id} ${getTodoTitle(todo)}${tagText}`;
+	return `${formatTodoId(todo.id)} ${getTodoTitle(todo)}${tagText}`;
 }
 
 function splitTodosByStatus(todos: TodoFrontMatter[]): { openTodos: TodoFrontMatter[]; closedTodos: TodoFrontMatter[] } {
@@ -942,19 +969,33 @@ function formatTodoList(todos: TodoFrontMatter[]): string {
 }
 
 function serializeTodoForAgent(todo: TodoRecord): string {
-	return JSON.stringify(todo, null, 2);
+	const payload = { ...todo, id: formatTodoId(todo.id) };
+	return JSON.stringify(payload, null, 2);
 }
 
 function serializeTodoListForAgent(todos: TodoFrontMatter[]): string {
 	const { openTodos, closedTodos } = splitTodosByStatus(todos);
-	return JSON.stringify({ open: openTodos, closed: closedTodos }, null, 2);
+	const mapTodo = (todo: TodoFrontMatter) => ({ ...todo, id: formatTodoId(todo.id) });
+	return JSON.stringify(
+		{
+			open: openTodos.map(mapTodo),
+			closed: closedTodos.map(mapTodo),
+		},
+		null,
+		2,
+	);
 }
 
 function renderTodoHeading(theme: Theme, todo: TodoFrontMatter): string {
 	const closed = isTodoClosed(getTodoStatus(todo));
 	const titleColor = closed ? "dim" : "text";
 	const tagText = todo.tags.length ? theme.fg("dim", ` [${todo.tags.join(", ")}]`) : "";
-	return theme.fg("accent", `#${todo.id}`) + " " + theme.fg(titleColor, getTodoTitle(todo)) + tagText;
+	return (
+		theme.fg("accent", formatTodoId(todo.id)) +
+		" " +
+		theme.fg(titleColor, getTodoTitle(todo)) +
+		tagText
+	);
 }
 
 function renderTodoList(theme: Theme, todos: TodoFrontMatter[], expanded: boolean): string {
@@ -1029,14 +1070,15 @@ async function updateTodoStatus(
 	status: string,
 	ctx: ExtensionContext,
 ): Promise<TodoRecord | { error: string }> {
-	const filePath = getTodoPath(todosDir, id);
+	const normalizedId = normalizeTodoId(id);
+	const filePath = getTodoPath(todosDir, normalizedId);
 	if (!existsSync(filePath)) {
-		return { error: `Todo ${id} not found` };
+		return { error: `Todo ${displayTodoId(id)} not found` };
 	}
 
-	const result = await withTodoLock(todosDir, id, ctx, async () => {
-		const existing = await ensureTodoExists(filePath, id);
-		if (!existing) return { error: `Todo ${id} not found` } as const;
+	const result = await withTodoLock(todosDir, normalizedId, ctx, async () => {
+		const existing = await ensureTodoExists(filePath, normalizedId);
+		if (!existing) return { error: `Todo ${displayTodoId(id)} not found` } as const;
 		existing.status = status;
 		await writeTodoFile(filePath, existing);
 		return existing;
@@ -1054,14 +1096,15 @@ async function deleteTodo(
 	id: string,
 	ctx: ExtensionContext,
 ): Promise<TodoRecord | { error: string }> {
-	const filePath = getTodoPath(todosDir, id);
+	const normalizedId = normalizeTodoId(id);
+	const filePath = getTodoPath(todosDir, normalizedId);
 	if (!existsSync(filePath)) {
-		return { error: `Todo ${id} not found` };
+		return { error: `Todo ${displayTodoId(id)} not found` };
 	}
 
-	const result = await withTodoLock(todosDir, id, ctx, async () => {
-		const existing = await ensureTodoExists(filePath, id);
-		if (!existing) return { error: `Todo ${id} not found` } as const;
+	const result = await withTodoLock(todosDir, normalizedId, ctx, async () => {
+		const existing = await ensureTodoExists(filePath, normalizedId);
+		if (!existing) return { error: `Todo ${displayTodoId(id)} not found` } as const;
 		await fs.unlink(filePath);
 		return existing;
 	});
@@ -1084,7 +1127,10 @@ export default function todosExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). Close todos when the work is done. Set PI_ISSUE_PATH to override the todo directory.",
+		description:
+			"Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). " +
+			"Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
+			"Close todos when the work is done. Set PI_ISSUE_PATH to override the todo directory.",
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _onUpdate, ctx) {
@@ -1116,11 +1162,13 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "get", error: "id required" },
 						};
 					}
-					const filePath = getTodoPath(todosDir, params.id);
-					const todo = await ensureTodoExists(filePath, params.id);
+					const normalizedId = normalizeTodoId(params.id);
+					const displayId = displayTodoId(params.id);
+					const filePath = getTodoPath(todosDir, normalizedId);
+					const todo = await ensureTodoExists(filePath, normalizedId);
 					if (!todo) {
 						return {
-							content: [{ type: "text", text: `Todo ${params.id} not found` }],
+							content: [{ type: "text", text: `Todo ${displayId} not found` }],
 							details: { action: "get", error: "not found" },
 						};
 					}
@@ -1174,18 +1222,20 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "update", error: "id required" },
 						};
 					}
-					const filePath = getTodoPath(todosDir, params.id);
+					const normalizedId = normalizeTodoId(params.id);
+					const displayId = displayTodoId(params.id);
+					const filePath = getTodoPath(todosDir, normalizedId);
 					if (!existsSync(filePath)) {
 						return {
-							content: [{ type: "text", text: `Todo ${params.id} not found` }],
+							content: [{ type: "text", text: `Todo ${displayId} not found` }],
 							details: { action: "update", error: "not found" },
 						};
 					}
-					const result = await withTodoLock(todosDir, params.id, ctx, async () => {
-						const existing = await ensureTodoExists(filePath, params.id);
-						if (!existing) return { error: `Todo ${params.id} not found` } as const;
+					const result = await withTodoLock(todosDir, normalizedId, ctx, async () => {
+						const existing = await ensureTodoExists(filePath, normalizedId);
+						if (!existing) return { error: `Todo ${displayId} not found` } as const;
 
-						existing.id = params.id;
+						existing.id = normalizedId;
 						if (params.title !== undefined) existing.title = params.title;
 						if (params.status !== undefined) existing.status = params.status;
 						if (params.tags !== undefined) existing.tags = params.tags;
@@ -1223,16 +1273,18 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "append", error: "body required" },
 						};
 					}
-					const filePath = getTodoPath(todosDir, params.id);
+					const normalizedId = normalizeTodoId(params.id);
+					const displayId = displayTodoId(params.id);
+					const filePath = getTodoPath(todosDir, normalizedId);
 					if (!existsSync(filePath)) {
 						return {
-							content: [{ type: "text", text: `Todo ${params.id} not found` }],
+							content: [{ type: "text", text: `Todo ${displayId} not found` }],
 							details: { action: "append", error: "not found" },
 						};
 					}
-					const result = await withTodoLock(todosDir, params.id, ctx, async () => {
-						const existing = await ensureTodoExists(filePath, params.id);
-						if (!existing) return { error: `Todo ${params.id} not found` } as const;
+					const result = await withTodoLock(todosDir, normalizedId, ctx, async () => {
+						const existing = await ensureTodoExists(filePath, normalizedId);
+						if (!existing) return { error: `Todo ${displayId} not found` } as const;
 						const updated = await appendTodoBody(filePath, existing, params.body!);
 						return updated;
 					});
@@ -1259,7 +1311,8 @@ export default function todosExtension(pi: ExtensionAPI) {
 						};
 					}
 
-					const result = await deleteTodo(todosDir, params.id, ctx);
+					const normalizedId = normalizeTodoId(params.id);
+					const result = await deleteTodo(todosDir, normalizedId, ctx);
 					if (typeof result === "object" && "error" in result) {
 						return {
 							content: [{ type: "text", text: result.error }],
@@ -1279,10 +1332,11 @@ export default function todosExtension(pi: ExtensionAPI) {
 		renderCall(args, theme) {
 			const action = typeof args.action === "string" ? args.action : "";
 			const id = typeof args.id === "string" ? args.id : "";
+			const normalizedId = id ? normalizeTodoId(id) : "";
 			const title = typeof args.title === "string" ? args.title : "";
 			let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", action);
-			if (id) {
-				text += " " + theme.fg("accent", `#${id}`);
+			if (normalizedId) {
+				text += " " + theme.fg("accent", formatTodoId(normalizedId));
 			}
 			if (title) {
 				text += " " + theme.fg("dim", `"${title}"`);
@@ -1355,7 +1409,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 				const tags = todo.tags.length ? ` • ${todo.tags.join(", ")}` : "";
 				return {
 					value: title,
-					label: `#${todo.id} ${title}`,
+					label: `${formatTodoId(todo.id)} ${title}`,
 					description: `${todo.status || "open"}${tags}`,
 				};
 			});
@@ -1393,10 +1447,28 @@ export default function todosExtension(pi: ExtensionAPI) {
 					const filePath = getTodoPath(todosDir, todo.id);
 					const record = await ensureTodoExists(filePath, todo.id);
 					if (!record) {
-						ctx.ui.notify(`Todo ${todo.id} not found`, "error");
+						ctx.ui.notify(`Todo ${formatTodoId(todo.id)} not found`, "error");
 						return null;
 					}
 					return record;
+				};
+
+				const openTodoOverlay = async (record: TodoRecord) => {
+					const action = await ctx.ui.custom<TodoOverlayAction>(
+						(overlayTui, overlayTheme, _overlayKb, overlayDone) =>
+							new TodoDetailOverlayComponent(overlayTui, overlayTheme, record, overlayDone),
+						{
+							overlay: true,
+							overlayOptions: { width: "80%", maxHeight: "80%", anchor: "center" },
+						},
+					);
+
+					if (!action || action === "cancel") return;
+					if (action === "actions") {
+						await showActionMenu(record);
+						return;
+					}
+					await applyTodoAction(record, action);
 				};
 
 				const applyTodoAction = async (record: TodoRecord, action: TodoMenuAction) => {
@@ -1407,14 +1479,18 @@ export default function todosExtension(pi: ExtensionAPI) {
 					}
 					if (action === "refine") {
 						const title = record.title || "(untitled)";
-						nextPrompt = `let's refine task #${record.id} "${title}": `;
+						nextPrompt = `let's refine task ${formatTodoId(record.id)} "${title}": `;
 						done();
 						return;
 					}
 					if (action === "work") {
 						const title = record.title || "(untitled)";
-						nextPrompt = `work on todo #${record.id} "${title}"`;
+						nextPrompt = `work on todo ${formatTodoId(record.id)} "${title}"`;
 						done();
+						return;
+					}
+					if (action === "view") {
+						await openTodoOverlay(record);
 						return;
 					}
 					if (action === "copy-path") {
@@ -1425,7 +1501,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					if (action === "delete") {
 						const ok = await ctx.ui.confirm(
 							"Delete todo",
-							`Delete todo ${record.id}? This cannot be undone.`,
+							`Delete todo ${formatTodoId(record.id)}? This cannot be undone.`,
 						);
 						if (!ok) {
 							return;
@@ -1437,7 +1513,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 						}
 						const updatedTodos = await listTodos(todosDir);
 						selector?.setTodos(updatedTodos);
-						ctx.ui.notify(`Deleted todo ${record.id}`, "info");
+						ctx.ui.notify(`Deleted todo ${formatTodoId(record.id)}`, "info");
 						return;
 					}
 
@@ -1451,7 +1527,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					const updatedTodos = await listTodos(todosDir);
 					selector?.setTodos(updatedTodos);
 					ctx.ui.notify(
-						`${action === "close" ? "Closed" : "Reopened"} todo ${record.id}`,
+						`${action === "close" ? "Closed" : "Reopened"} todo ${formatTodoId(record.id)}`,
 						"info",
 					);
 				};
@@ -1460,6 +1536,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					const record = "body" in todo ? todo : await resolveTodoRecord(todo);
 					if (!record) return;
 					const options: SelectItem[] = [
+						{ value: "view", label: "view", description: "View todo" },
 						{ value: "work", label: "work", description: "Work on todo" },
 						{ value: "refine", label: "refine", description: "Refine task" },
 						{ value: "close", label: "close", description: "Close todo" },
@@ -1475,7 +1552,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 								new Text(
 									overlayTheme.fg(
 										"accent",
-										overlayTheme.bold(`Actions for #${record.id} "${title}"`),
+										overlayTheme.bold(`Actions for ${formatTodoId(record.id)} "${title}"`),
 									),
 								),
 							);
@@ -1539,22 +1616,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 				const handleSelect = async (todo: TodoFrontMatter) => {
 					const record = await resolveTodoRecord(todo);
 					if (!record) return;
-
-					const action = await ctx.ui.custom<TodoOverlayAction>(
-						(overlayTui, overlayTheme, _overlayKb, overlayDone) =>
-							new TodoDetailOverlayComponent(overlayTui, overlayTheme, record, overlayDone),
-						{
-							overlay: true,
-							overlayOptions: { width: "80%", maxHeight: "80%", anchor: "center" },
-						},
-					);
-
-					if (!action || action === "cancel") return;
-					if (action === "actions") {
-						await showActionMenu(record);
-						return;
-					}
-					await applyTodoAction(record, action);
+					await openTodoOverlay(record);
 				};
 
 				selector = new TodoSelectorComponent(
@@ -1574,8 +1636,8 @@ export default function todosExtension(pi: ExtensionAPI) {
 						const title = todo.title || "(untitled)";
 						nextPrompt =
 							action === "refine"
-								? `let's refine task #${todo.id} "${title}": `
-								: `work on todo #${todo.id} "${title}"`;
+								? `let's refine task ${formatTodoId(todo.id)} "${title}": `
+								: `work on todo ${formatTodoId(todo.id)} "${title}"`;
 						done();
 					},
 				);
@@ -1590,44 +1652,4 @@ export default function todosExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("todo-log", {
-		description: "Append text to a todo body",
-		handler: async (args, ctx) => {
-			const id = (args ?? "").trim();
-			if (!id) {
-				ctx.ui.notify("Usage: /todo-log <id>", "error");
-				return;
-			}
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/todo-log requires interactive mode", "error");
-				return;
-			}
-
-			const todosDir = getTodosDir(ctx.cwd);
-			const filePath = getTodoPath(todosDir, id);
-			if (!existsSync(filePath)) {
-				ctx.ui.notify(`Todo ${id} not found`, "error");
-				return;
-			}
-
-			const text = await ctx.ui.editor(`Append to todo ${id}:`, "");
-			if (!text?.trim()) {
-				ctx.ui.notify("No text provided", "warning");
-				return;
-			}
-
-			const result = await withTodoLock(todosDir, id, ctx, async () => {
-				const existing = await ensureTodoExists(filePath, id);
-				if (!existing) return { error: `Todo ${id} not found` } as const;
-				return appendTodoBody(filePath, existing, text);
-			});
-
-			if (typeof result === "object" && "error" in result) {
-				ctx.ui.notify(result.error, "error");
-				return;
-			}
-
-			ctx.ui.notify(`Appended to todo ${id}`, "info");
-		},
-	});
 }
