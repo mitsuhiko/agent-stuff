@@ -9,12 +9,14 @@ import {
 	Container,
 	type Focusable,
 	Input,
+	Key,
 	Markdown,
 	Spacer,
 	Text,
 	TUI,
 	fuzzyMatch,
 	getEditorKeybindings,
+	matchesKey,
 	truncateToWidth,
 	visibleWidth,
 } from "@mariozechner/pi-tui";
@@ -340,7 +342,7 @@ class TodoDetailOverlayComponent {
 			this.scrollBy(this.viewHeight || 1);
 			return;
 		}
-		if (keyData === "r" || keyData === "R") {
+		if (matchesKey(keyData, Key.alt("r"))) {
 			this.onAction("refine");
 			return;
 		}
@@ -352,7 +354,7 @@ class TodoDetailOverlayComponent {
 			this.onAction("reopen");
 			return;
 		}
-		if (keyData === "w" || keyData === "W") {
+		if (matchesKey(keyData, Key.alt("w"))) {
 			this.onAction("work");
 			return;
 		}
@@ -444,8 +446,8 @@ class TodoDetailOverlayComponent {
 
 	private buildActionLine(width: number): string {
 		const closed = isTodoClosed(this.todo.status);
-		const refine = this.theme.fg("accent", "r") + this.theme.fg("muted", " refine task");
-		const work = this.theme.fg("accent", "w") + this.theme.fg("muted", " work on todo");
+		const refine = this.theme.fg("accent", "alt+r") + this.theme.fg("muted", " refine task");
+		const work = this.theme.fg("accent", "alt+w") + this.theme.fg("muted", " work on todo");
 		const close = this.theme.fg(closed ? "dim" : "accent", "c") +
 			this.theme.fg(closed ? "dim" : "muted", " close task");
 		const reopen = this.theme.fg(closed ? "accent" : "dim", "o") +
