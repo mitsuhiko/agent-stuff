@@ -74,7 +74,9 @@ const TodoParams = Type.Object({
 
 type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" | "delete";
 
-type TodoOverlayAction = "refine" | "close" | "reopen" | "work" | "delete" | "cancel";
+type TodoOverlayAction = "refine" | "close" | "reopen" | "work" | "delete" | "cancel" | "actions";
+
+type TodoMenuAction = TodoOverlayAction | "copy-path" | "close-dialog";
 
 type TodoToolDetails =
 	| { action: "list" | "list-all"; todos: TodoFrontMatter[]; error?: string }
@@ -166,7 +168,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		onSelect: (todo: TodoFrontMatter) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
-		private onQuickAction?: (todo: TodoFrontMatter, action: "work" | "refine") => void,
+		private onQuickAction?: (todo: TodoFrontMatter, action: "work" | "refine" | "actions") => void,
 	) {
 		super();
 		this.tui = tui;
@@ -230,7 +232,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		this.hintText.setText(
 			this.theme.fg(
 				"dim",
-				"Type to search • ↑↓ select • Enter view • Ctrl+Shift+R refine • Ctrl+Shift+W work • Esc close",
+				"Type to search • ↑↓ select • Enter view • Ctrl+Shift+A actions • Ctrl+Shift+R refine • Ctrl+Shift+W work • Esc close",
 			),
 		);
 	}
@@ -318,6 +320,11 @@ class TodoSelectorComponent extends Container implements Focusable {
 			if (selected && this.onQuickAction) this.onQuickAction(selected, "work");
 			return;
 		}
+		if (matchesKey(keyData, Key.ctrlShift("a"))) {
+			const selected = this.filteredTodos[this.selectedIndex];
+			if (selected && this.onQuickAction) this.onQuickAction(selected, "actions");
+			return;
+		}
 
 		this.searchInput.handleInput(keyData);
 		this.applyFilter(this.searchInput.getValue());
@@ -390,6 +397,10 @@ class TodoDetailOverlayComponent {
 		}
 		if (keyData === "w" || keyData === "W") {
 			this.onAction("work");
+			return;
+		}
+		if (keyData === "a" || keyData === "A") {
+			this.onAction("actions");
 			return;
 		}
 		if (keyData === "d" || keyData === "D") {
@@ -482,13 +493,13 @@ class TodoDetailOverlayComponent {
 		const closed = isTodoClosed(this.todo.status);
 		const refine = this.theme.fg("accent", "r") + this.theme.fg("muted", " refine task");
 		const work = this.theme.fg("accent", "w") + this.theme.fg("muted", " work on todo");
-		const close = this.theme.fg(closed ? "dim" : "accent", "c") +
-			this.theme.fg(closed ? "dim" : "muted", " close task");
-		const reopen = this.theme.fg(closed ? "accent" : "dim", "o") +
-			this.theme.fg(closed ? "muted" : "dim", " reopen task");
+		const close = this.theme.fg("accent", "c") + this.theme.fg("muted", " close task");
+		const reopen = this.theme.fg("accent", "o") + this.theme.fg("muted", " reopen task");
+		const statusAction = closed ? reopen : close;
+		const actions = this.theme.fg("accent", "a") + this.theme.fg("muted", " actions");
 		const del = this.theme.fg("error", "d") + this.theme.fg("muted", " delete todo");
 		const back = this.theme.fg("dim", "esc back");
-		const pieces = [refine, work, close, reopen, del, back];
+		const pieces = [refine, work, statusAction, actions, del, back];
 
 		let line = pieces.join(this.theme.fg("muted", " • "));
 		if (this.totalLines > this.viewHeight) {
@@ -1360,26 +1371,36 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 			let nextPrompt: string | null = null;
 			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-				let selector: TodoSelectorComponent;
+				let selector: TodoSelectorComponent | null = null;
 
-				const handleSelect = async (todo: TodoFrontMatter) => {
+				const addTodoPathToPrompt = (todoId: string) => {
+					const filePath = getTodoPath(todosDir, todoId);
+					const relativePath = path.relative(ctx.cwd, filePath);
+					const displayPath =
+						relativePath && !relativePath.startsWith("..") ? relativePath : filePath;
+					const mention = `@${displayPath}`;
+					const current = ctx.ui.getEditorText();
+					const separator = current && !current.endsWith(" ") ? " " : "";
+					ctx.ui.setEditorText(`${current}${separator}${mention}`);
+					ctx.ui.notify(`Added ${mention} to prompt`, "info");
+				};
+
+				const resolveTodoRecord = async (todo: TodoFrontMatter): Promise<TodoRecord | null> => {
 					const filePath = getTodoPath(todosDir, todo.id);
 					const record = await ensureTodoExists(filePath, todo.id);
 					if (!record) {
 						ctx.ui.notify(`Todo ${todo.id} not found`, "error");
+						return null;
+					}
+					return record;
+				};
+
+				const applyTodoAction = async (record: TodoRecord, action: TodoMenuAction) => {
+					if (action === "cancel") return;
+					if (action === "close-dialog") {
+						done();
 						return;
 					}
-
-					const action = await ctx.ui.custom<TodoOverlayAction>(
-						(overlayTui, overlayTheme, _overlayKb, overlayDone) =>
-							new TodoDetailOverlayComponent(overlayTui, overlayTheme, record, overlayDone),
-						{
-							overlay: true,
-							overlayOptions: { width: "80%", maxHeight: "80%", anchor: "center" },
-						},
-					);
-
-					if (!action || action === "cancel") return;
 					if (action === "refine") {
 						const title = record.title || "(untitled)";
 						nextPrompt = `let's refine task #${record.id} "${title}": `;
@@ -1390,6 +1411,10 @@ export default function todosExtension(pi: ExtensionAPI) {
 						const title = record.title || "(untitled)";
 						nextPrompt = `work on todo #${record.id} "${title}"`;
 						done();
+						return;
+					}
+					if (action === "copy-path") {
+						addTodoPathToPrompt(record.id);
 						return;
 					}
 
@@ -1407,7 +1432,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 							return;
 						}
 						const updatedTodos = await listTodos(todosDir);
-						selector.setTodos(updatedTodos);
+						selector?.setTodos(updatedTodos);
 						ctx.ui.notify(`Deleted todo ${record.id}`, "info");
 						return;
 					}
@@ -1420,11 +1445,54 @@ export default function todosExtension(pi: ExtensionAPI) {
 					}
 
 					const updatedTodos = await listTodos(todosDir);
-					selector.setTodos(updatedTodos);
+					selector?.setTodos(updatedTodos);
 					ctx.ui.notify(
 						`${action === "close" ? "Closed" : "Reopened"} todo ${record.id}`,
 						"info",
 					);
+				};
+
+				const showActionMenu = async (todo: TodoFrontMatter | TodoRecord) => {
+					const record = "body" in todo ? todo : await resolveTodoRecord(todo);
+					if (!record) return;
+					const options = [
+						{ id: "refine", label: "refine - Refine task" },
+						{ id: "work", label: "work - Work on todo" },
+						{ id: "close", label: "close - Close todo" },
+						{ id: "reopen", label: "reopen - Reopen todo" },
+						{ id: "copy-path", label: "copy - Copy todo path into prompt" },
+						{ id: "delete", label: "delete - Delete todo" },
+					];
+					const title = record.title || "(untitled)";
+					const selection = await ctx.ui.select(
+						`Actions for #${record.id} "${title}"`,
+						options.map((option) => option.label),
+					);
+					if (!selection) return;
+					const selected = options.find((option) => option.label === selection);
+					if (!selected) return;
+					await applyTodoAction(record, selected.id as TodoMenuAction);
+				};
+
+				const handleSelect = async (todo: TodoFrontMatter) => {
+					const record = await resolveTodoRecord(todo);
+					if (!record) return;
+
+					const action = await ctx.ui.custom<TodoOverlayAction>(
+						(overlayTui, overlayTheme, _overlayKb, overlayDone) =>
+							new TodoDetailOverlayComponent(overlayTui, overlayTheme, record, overlayDone),
+						{
+							overlay: true,
+							overlayOptions: { width: "80%", maxHeight: "80%", anchor: "center" },
+						},
+					);
+
+					if (!action || action === "cancel") return;
+					if (action === "actions") {
+						await showActionMenu(record);
+						return;
+					}
+					await applyTodoAction(record, action);
 				};
 
 				selector = new TodoSelectorComponent(
@@ -1437,6 +1505,10 @@ export default function todosExtension(pi: ExtensionAPI) {
 					() => done(),
 					searchTerm || undefined,
 					(todo, action) => {
+						if (action === "actions") {
+							void showActionMenu(todo);
+							return;
+						}
 						const title = todo.title || "(untitled)";
 						nextPrompt =
 							action === "refine"
