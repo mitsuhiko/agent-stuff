@@ -7,7 +7,7 @@
  *   "gcDays": 7   // age threshold for GC (days since created_at)
  * }
  */
-import { DynamicBorder, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, copyToClipboard, getMarkdownTheme, keyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { StringEnum } from "@mariozechner/pi-ai";
 import { Type } from "@sinclair/typebox";
 import path from "node:path";
@@ -90,7 +90,7 @@ type TodoMenuAction =
 	| "close"
 	| "reopen"
 	| "delete"
-	| "copy-path"
+	| "copy"
 	| "view";
 
 type TodoToolDetails =
@@ -398,7 +398,7 @@ class TodoActionMenuComponent extends Container {
 			...(closed
 				? [{ value: "reopen", label: "reopen", description: "Reopen todo" }]
 				: [{ value: "close", label: "close", description: "Close todo" }]),
-			{ value: "copy-path", label: "copy", description: "Copy path to prompt" },
+			{ value: "copy", label: "copy", description: "Copy path to clipboard" },
 			{ value: "delete", label: "delete", description: "Delete todo" },
 		];
 
@@ -1584,16 +1584,18 @@ export default function todosExtension(pi: ExtensionAPI) {
 					tui.requestRender();
 				};
 
-				const addTodoPathToPrompt = (todoId: string) => {
+				const copyTodoPathToClipboard = (todoId: string) => {
 					const filePath = getTodoPath(todosDir, todoId);
 					const relativePath = path.relative(ctx.cwd, filePath);
 					const displayPath =
 						relativePath && !relativePath.startsWith("..") ? relativePath : filePath;
-					const mention = `@${displayPath}`;
-					const current = ctx.ui.getEditorText();
-					const separator = current && !current.endsWith(" ") ? " " : "";
-					ctx.ui.setEditorText(`${current}${separator}${mention}`);
-					ctx.ui.notify(`Added ${mention} to prompt`, "info");
+					try {
+						copyToClipboard(displayPath);
+						ctx.ui.notify(`Copied ${displayPath} to clipboard`, "info");
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						ctx.ui.notify(message, "error");
+					}
 				};
 
 				const resolveTodoRecord = async (todo: TodoFrontMatter): Promise<TodoRecord | null> => {
@@ -1638,8 +1640,8 @@ export default function todosExtension(pi: ExtensionAPI) {
 					if (action === "view") {
 						return "stay";
 					}
-					if (action === "copy-path") {
-						addTodoPathToPrompt(record.id);
+					if (action === "copy") {
+						copyTodoPathToClipboard(record.id);
 						return "stay";
 					}
 
