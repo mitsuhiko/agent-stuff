@@ -557,6 +557,14 @@ function getTodosDir(cwd: string): string {
 	return path.resolve(cwd, TODO_DIR_NAME);
 }
 
+function getTodosDirLabel(cwd: string): string {
+	const overridePath = process.env[TODO_PATH_ENV];
+	if (overridePath && overridePath.trim()) {
+		return path.resolve(cwd, overridePath.trim());
+	}
+	return TODO_DIR_NAME;
+}
+
 function getTodoSettingsPath(todosDir: string): string {
 	return path.join(todosDir, TODO_SETTINGS_NAME);
 }
@@ -573,26 +581,15 @@ function normalizeTodoSettings(raw: Partial<TodoSettings>): TodoSettings {
 async function readTodoSettings(todosDir: string): Promise<TodoSettings> {
 	const settingsPath = getTodoSettingsPath(todosDir);
 	let data: Partial<TodoSettings> = {};
-	let shouldWrite = false;
 
 	try {
 		const raw = await fs.readFile(settingsPath, "utf8");
 		data = JSON.parse(raw) as Partial<TodoSettings>;
 	} catch {
-		shouldWrite = true;
+		data = {};
 	}
 
-	const normalized = normalizeTodoSettings(data);
-	if (
-		shouldWrite ||
-		data.gc === undefined ||
-		data.gcDays === undefined ||
-		!Number.isFinite(data.gcDays)
-	) {
-		await fs.writeFile(settingsPath, JSON.stringify(normalized, null, 2) + "\n", "utf8");
-	}
-
-	return normalized;
+	return normalizeTodoSettings(data);
 }
 
 async function garbageCollectTodos(todosDir: string, settings: TodoSettings): Promise<void> {
@@ -1138,14 +1135,16 @@ export default function todosExtension(pi: ExtensionAPI) {
 		await garbageCollectTodos(todosDir, settings);
 	});
 
+	const todosDirLabel = getTodosDirLabel(process.cwd());
+
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
 		description:
-			"Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). " +
+			`Manage file-based todos in ${todosDirLabel} (list, list-all, get, create, update, append, delete). ` +
 			"Title is the short summary; body is long-form markdown notes (update replaces, append adds). " +
 			"Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
-			"Close todos when the work is done. Set PI_ISSUE_PATH to override the todo directory.",
+			"Close todos when the work is done.",
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _onUpdate, ctx) {
