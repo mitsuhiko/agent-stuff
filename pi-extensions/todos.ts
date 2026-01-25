@@ -71,10 +71,12 @@ const TodoParams = Type.Object({
 	id: Type.Optional(
 		Type.String({ description: "Todo id (TODO-<hex> or raw hex filename)" }),
 	),
-	title: Type.Optional(Type.String({ description: "Todo title" })),
+	title: Type.Optional(Type.String({ description: "Short summary shown in lists" })),
 	status: Type.Optional(Type.String({ description: "Todo status" })),
 	tags: Type.Optional(Type.Array(Type.String({ description: "Todo tag" }))),
-	body: Type.Optional(Type.String({ description: "Todo body or append text" })),
+	body: Type.Optional(
+		Type.String({ description: "Long-form details (markdown). Update replaces; append adds." }),
+	),
 });
 
 type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append" | "delete";
@@ -192,7 +194,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		onSelect: (todo: TodoFrontMatter) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
-		private onQuickAction?: (todo: TodoFrontMatter, action: "work" | "refine" | "actions") => void,
+		private onQuickAction?: (todo: TodoFrontMatter, action: "work" | "refine") => void,
 	) {
 		super();
 		this.tui = tui;
@@ -256,7 +258,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		this.hintText.setText(
 			this.theme.fg(
 				"dim",
-				"Type to search • ↑↓ select • Enter view • Ctrl+Shift+A actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
+				"Type to search • ↑↓ select • Enter actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
 			),
 		);
 	}
@@ -344,12 +346,6 @@ class TodoSelectorComponent extends Container implements Focusable {
 			if (selected && this.onQuickAction) this.onQuickAction(selected, "work");
 			return;
 		}
-		if (matchesKey(keyData, Key.ctrlShift("a"))) {
-			const selected = this.filteredTodos[this.selectedIndex];
-			if (selected && this.onQuickAction) this.onQuickAction(selected, "actions");
-			return;
-		}
-
 		this.searchInput.handleInput(keyData);
 		this.applyFilter(this.searchInput.getValue());
 	}
@@ -1129,6 +1125,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 		label: "Todo",
 		description:
 			"Manage file-based todos in .pi/todos (list, list-all, get, create, update, append, delete). " +
+			"Title is the short summary; body is long-form markdown notes (update replaces, append adds). " +
 			"Todo ids are shown as TODO-<hex>; id parameters accept TODO-<hex> or the raw hex filename. " +
 			"Close todos when the work is done. Set PI_ISSUE_PATH to override the todo directory.",
 		parameters: TodoParams,
@@ -1614,9 +1611,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 				};
 
 				const handleSelect = async (todo: TodoFrontMatter) => {
-					const record = await resolveTodoRecord(todo);
-					if (!record) return;
-					await openTodoOverlay(record);
+					await showActionMenu(todo);
 				};
 
 				selector = new TodoSelectorComponent(
@@ -1629,10 +1624,6 @@ export default function todosExtension(pi: ExtensionAPI) {
 					() => done(),
 					searchTerm || undefined,
 					(todo, action) => {
-						if (action === "actions") {
-							void showActionMenu(todo);
-							return;
-						}
 						const title = todo.title || "(untitled)";
 						nextPrompt =
 							action === "refine"
