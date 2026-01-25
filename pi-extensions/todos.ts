@@ -36,6 +36,7 @@ const TODO_DIR_NAME = ".pi/todos";
 const TODO_PATH_ENV = "PI_ISSUE_PATH";
 const TODO_SETTINGS_NAME = "settings.json";
 const TODO_ID_PREFIX = "TODO-";
+const TODO_ID_PATTERN = /^[a-f0-9]{8}$/i;
 const DEFAULT_TODO_SETTINGS = {
 	gc: true,
 	gcDays: 7,
@@ -102,6 +103,14 @@ function normalizeTodoId(id: string): string {
 		trimmed = trimmed.slice(TODO_ID_PREFIX.length);
 	}
 	return trimmed;
+}
+
+function validateTodoId(id: string): { id: string } | { error: string } {
+	const normalized = normalizeTodoId(id);
+	if (!normalized || !TODO_ID_PATTERN.test(normalized)) {
+		return { error: "Invalid todo id. Expected TODO-<hex>." };
+	}
+	return { id: normalized.toLowerCase() };
 }
 
 function displayTodoId(id: string): string {
@@ -1074,7 +1083,11 @@ async function updateTodoStatus(
 	status: string,
 	ctx: ExtensionContext,
 ): Promise<TodoRecord | { error: string }> {
-	const normalizedId = normalizeTodoId(id);
+	const validated = validateTodoId(id);
+	if ("error" in validated) {
+		return { error: validated.error };
+	}
+	const normalizedId = validated.id;
 	const filePath = getTodoPath(todosDir, normalizedId);
 	if (!existsSync(filePath)) {
 		return { error: `Todo ${displayTodoId(id)} not found` };
@@ -1100,7 +1113,11 @@ async function deleteTodo(
 	id: string,
 	ctx: ExtensionContext,
 ): Promise<TodoRecord | { error: string }> {
-	const normalizedId = normalizeTodoId(id);
+	const validated = validateTodoId(id);
+	if ("error" in validated) {
+		return { error: validated.error };
+	}
+	const normalizedId = validated.id;
 	const filePath = getTodoPath(todosDir, normalizedId);
 	if (!existsSync(filePath)) {
 		return { error: `Todo ${displayTodoId(id)} not found` };
@@ -1167,8 +1184,15 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "get", error: "id required" },
 						};
 					}
-					const normalizedId = normalizeTodoId(params.id);
-					const displayId = displayTodoId(params.id);
+					const validated = validateTodoId(params.id);
+					if ("error" in validated) {
+						return {
+							content: [{ type: "text", text: validated.error }],
+							details: { action: "get", error: validated.error },
+						};
+					}
+					const normalizedId = validated.id;
+					const displayId = formatTodoId(normalizedId);
 					const filePath = getTodoPath(todosDir, normalizedId);
 					const todo = await ensureTodoExists(filePath, normalizedId);
 					if (!todo) {
@@ -1227,8 +1251,15 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "update", error: "id required" },
 						};
 					}
-					const normalizedId = normalizeTodoId(params.id);
-					const displayId = displayTodoId(params.id);
+					const validated = validateTodoId(params.id);
+					if ("error" in validated) {
+						return {
+							content: [{ type: "text", text: validated.error }],
+							details: { action: "update", error: validated.error },
+						};
+					}
+					const normalizedId = validated.id;
+					const displayId = formatTodoId(normalizedId);
 					const filePath = getTodoPath(todosDir, normalizedId);
 					if (!existsSync(filePath)) {
 						return {
@@ -1272,8 +1303,15 @@ export default function todosExtension(pi: ExtensionAPI) {
 							details: { action: "append", error: "id required" },
 						};
 					}
-					const normalizedId = normalizeTodoId(params.id);
-					const displayId = displayTodoId(params.id);
+					const validated = validateTodoId(params.id);
+					if ("error" in validated) {
+						return {
+							content: [{ type: "text", text: validated.error }],
+							details: { action: "append", error: validated.error },
+						};
+					}
+					const normalizedId = validated.id;
+					const displayId = formatTodoId(normalizedId);
 					const filePath = getTodoPath(todosDir, normalizedId);
 					if (!existsSync(filePath)) {
 						return {
@@ -1313,8 +1351,14 @@ export default function todosExtension(pi: ExtensionAPI) {
 						};
 					}
 
-					const normalizedId = normalizeTodoId(params.id);
-					const result = await deleteTodo(todosDir, normalizedId, ctx);
+					const validated = validateTodoId(params.id);
+					if ("error" in validated) {
+						return {
+							content: [{ type: "text", text: validated.error }],
+							details: { action: "delete", error: validated.error },
+						};
+					}
+					const result = await deleteTodo(todosDir, validated.id, ctx);
 					if (typeof result === "object" && "error" in result) {
 						return {
 							content: [{ type: "text", text: result.error }],
