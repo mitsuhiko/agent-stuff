@@ -1,0 +1,22 @@
+{
+  "name": "mitsupi",
+  "version": "1.0.0",
+  "description": "Pi extensions, skills, and themes",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "pi-theme"
+  ],
+  "pi": {
+    "extensions": ["./pi-extensions/*.ts"],
+    "skills": ["./skills"],
+    "themes": ["./pi-themes/*.json"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}
