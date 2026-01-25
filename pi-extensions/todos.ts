@@ -42,7 +42,7 @@ interface LockInfo {
 }
 
 const TodoParams = Type.Object({
-	action: StringEnum(["list", "get", "create", "update", "append"] as const),
+	action: StringEnum(["list", "list-all", "get", "create", "update", "append"] as const),
 	id: Type.Optional(Type.String({ description: "Todo id (filename)" })),
 	title: Type.Optional(Type.String({ description: "Todo title" })),
 	status: Type.Optional(Type.String({ description: "Todo status" })),
@@ -50,12 +50,12 @@ const TodoParams = Type.Object({
 	body: Type.Optional(Type.String({ description: "Todo body or append text" })),
 });
 
-type TodoAction = "list" | "get" | "create" | "update" | "append";
+type TodoAction = "list" | "list-all" | "get" | "create" | "update" | "append";
 
 type TodoOverlayAction = "refine" | "close" | "reopen" | "work" | "cancel";
 
 type TodoToolDetails =
-	| { action: "list"; todos: TodoFrontMatter[]; error?: string }
+	| { action: "list" | "list-all"; todos: TodoFrontMatter[]; error?: string }
 	| { action: "get" | "create" | "update" | "append"; todo: TodoRecord; error?: string };
 
 function isTodoClosed(status: string): boolean {
@@ -923,7 +923,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage file-based todos in .pi/todos (list, get, create, update, append)",
+		description: "Manage file-based todos in .pi/todos (list, list-all, get, create, update, append)",
 		parameters: TodoParams,
 
 		async execute(_toolCallId, params, _onUpdate, ctx) {
@@ -933,9 +933,18 @@ export default function todosExtension(pi: ExtensionAPI) {
 			switch (action) {
 				case "list": {
 					const todos = await listTodos(todosDir);
+					const { openTodos } = splitTodosByStatus(todos);
+					return {
+						content: [{ type: "text", text: serializeTodoListForAgent(openTodos) }],
+						details: { action: "list", todos: openTodos },
+					};
+				}
+
+				case "list-all": {
+					const todos = await listTodos(todosDir);
 					return {
 						content: [{ type: "text", text: serializeTodoListForAgent(todos) }],
-						details: { action: "list", todos },
+						details: { action: "list-all", todos },
 					};
 				}
 
@@ -1111,7 +1120,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 				return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
 			}
 
-			if (details.action === "list") {
+			if (details.action === "list" || details.action === "list-all") {
 				let text = renderTodoList(theme, details.todos, expanded);
 				if (!expanded) {
 					const { closedTodos } = splitTodosByStatus(details.todos);
