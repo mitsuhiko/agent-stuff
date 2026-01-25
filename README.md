@@ -89,6 +89,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`reveal.ts`](pi-extensions/reveal.ts) - Finder/Quick Look helper that browses session file references via Ctrl+F or `/files`, with Ctrl+R revealing the latest file and Ctrl+Shift+R opening Quick Look on macOS.
 * [`cwd-history.ts`](pi-extensions/cwd-history.ts) - Displays and manages recent working directory history inside the PI Coding Agent.
 * [`codex-tuning.ts`](pi-extensions/codex-tuning.ts) - Codex tuning helper for collecting samples and tagging outcomes during agent sessions.
+* [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
 
 ## PI Coding Agent Themes
 
