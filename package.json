@@ -17,7 +17,8 @@
   "pi": {
     "extensions": ["./pi-extensions"],
     "skills": ["./skills"],
-    "themes": ["./pi-themes"]
+    "themes": ["./pi-themes"],
+    "prompts": ["./commands"]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
