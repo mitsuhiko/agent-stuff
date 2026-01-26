@@ -1,3 +1,40 @@
+/**
+ * Session Control Extension
+ *
+ * Enables inter-session communication via Unix domain sockets.  When enabled with
+ * the `--session-control` flag, each pi session creates a control socket at
+ * `~/.pi/session-control/<session-id>.sock` that accepts JSON-RPC commands.
+ *
+ * Features:
+ * - Send messages to other running pi sessions (steer or follow-up mode)
+ * - Retrieve the last assistant message from a session
+ * - Get AI-generated summaries of session activity
+ * - Clear/rewind sessions to their initial state
+ * - Subscribe to turn_end events for async coordination
+ *
+ * Once loaded the extension registers a `send_to_session` tool that allows the AI to
+ * communicate with other pi sessions programmatically.
+ *
+ * Usage:
+ *   pi --session-control
+ *
+ * Environment:
+ *   Sets PI_SESSION_ID when enabled, allowing child processes to discover
+ *   the current session.
+ *
+ * RPC Protocol:
+ *   Commands are newline-delimited JSON objects with a `type` field:
+ *   - { type: "send", message: "...", mode?: "steer"|"follow_up" }
+ *   - { type: "get_message" }
+ *   - { type: "get_summary" }
+ *   - { type: "clear", summarize?: boolean }
+ *   - { type: "abort" }
+ *   - { type: "subscribe", event: "turn_end" }
+ *
+ *   Responses are JSON objects with { type: "response", command, success, data?, error? }
+ *   Events are JSON objects with { type: "event", event, data?, subscriptionId? }
+ */
+
 import type { ExtensionAPI, ExtensionContext, TurnEndEvent } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { complete, type Model, type Api, type UserMessage } from "@mariozechner/pi-ai";
