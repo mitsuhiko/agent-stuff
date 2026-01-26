@@ -690,7 +690,7 @@ export default function (pi: ExtensionAPI) {
 		turnEndSubscriptions: [],
 	};
 
-	let toolRegistered = false;
+	registerSessionTool(pi, state);
 
 	const refreshServer = async (ctx: ExtensionContext) => {
 		const enabled = pi.getFlag(CONTROL_FLAG) === true;
@@ -703,12 +703,6 @@ export default function (pi: ExtensionAPI) {
 		await startControlServer(pi, state, ctx);
 		updateStatus(ctx, true);
 		updateSessionEnv(ctx, true);
-
-		// Register tool only once when session-control is enabled
-		if (!toolRegistered) {
-			toolRegistered = true;
-			registerSessionTool(pi, state);
-		}
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
