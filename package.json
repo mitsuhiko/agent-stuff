@@ -12,6 +12,7 @@
   "pi": {
     "extensions": ["./pi-extensions"],
     "skills": ["./skills"],
+    "prompts": ["./commands"],
     "themes": ["./pi-themes"]
   },
   "peerDependencies": {
