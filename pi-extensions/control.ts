@@ -496,8 +496,54 @@ function stripSenderInfo(text: string): string {
 	return text.replace(SENDER_INFO_PATTERN, "").trim();
 }
 
+interface SenderInfo {
+	sessionId?: string;
+	sessionName?: string;
+}
+
+function parseSenderInfo(text: string): SenderInfo | null {
+	const match = text.match(/<sender_info>([\s\S]*?)<\/sender_info>/);
+	if (!match) return null;
+	const raw = match[1].trim();
+	if (!raw) return null;
+
+	if (raw.startsWith("{")) {
+		try {
+			const parsed = JSON.parse(raw) as { sessionId?: unknown; sessionName?: unknown };
+			const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId.trim() : "";
+			const sessionName = typeof parsed.sessionName === "string" ? parsed.sessionName.trim() : "";
+			if (sessionId || sessionName) {
+				return {
+					sessionId: sessionId || undefined,
+					sessionName: sessionName || undefined,
+				};
+			}
+		} catch {
+			// Ignore JSON parse errors, fall back to legacy parsing.
+		}
+	}
+
+	const legacyIdMatch = raw.match(/session\s+([a-f0-9-]{6,})/i);
+	if (legacyIdMatch) {
+		return { sessionId: legacyIdMatch[1] };
+	}
+
+	return null;
+}
+
+function formatSenderInfo(info: SenderInfo | null): string | null {
+	if (!info) return null;
+	const { sessionName, sessionId } = info;
+	if (sessionName && sessionId) return `${sessionName} (${sessionId})`;
+	if (sessionName) return sessionName;
+	if (sessionId) return sessionId;
+	return null;
+}
+
 const renderSessionMessage: MessageRenderer = (message, { expanded }, theme) => {
-	let text = stripSenderInfo(extractTextContent(message.content));
+	const rawContent = extractTextContent(message.content);
+	const senderInfo = parseSenderInfo(rawContent);
+	let text = stripSenderInfo(rawContent);
 	if (!text) text = "(no content)";
 
 	if (!expanded) {
@@ -508,7 +554,9 @@ const renderSessionMessage: MessageRenderer = (message, { expanded }, theme) => 
 	}
 
 	const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
-	const label = theme.fg("customMessageLabel", `\x1b[1m[${message.customType}]\x1b[22m`);
+	const labelBase = theme.fg("customMessageLabel", `\x1b[1m[${message.customType}]\x1b[22m`);
+	const senderText = formatSenderInfo(senderInfo);
+	const label = senderText ? `${labelBase} ${theme.fg("dim", `from ${senderText}`)}` : labelBase;
 	box.addChild(new Text(label, 0, 0));
 	box.addChild(new Spacer(1));
 	box.addChild(
@@ -1161,8 +1209,12 @@ Messages automatically include sender session info for replies. When you want a 
 					};
 				}
 
+				const senderSessionName = state.context?.sessionManager.getSessionName()?.trim();
 				const senderInfo = senderSessionId
-					? `\n\n<sender_info>This message was sent by session ${senderSessionId}</sender_info>`
+					? `\n\n<sender_info>${JSON.stringify({
+						sessionId: senderSessionId,
+						sessionName: senderSessionName || undefined,
+					})}</sender_info>`
 					: "";
 
 				const sendCommand: RpcSendCommand = {
