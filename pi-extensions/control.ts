@@ -264,6 +264,100 @@ async function createAliasSymlink(sessionId: string, alias: string): Promise<voi
 	}
 }
 
+async function resolveSessionIdFromAlias(alias: string): Promise<string | null> {
+	if (!alias || !isSafeAlias(alias)) return null;
+	const aliasPath = getAliasPath(alias);
+	try {
+		const target = await fs.readlink(aliasPath);
+		const resolvedTarget = path.resolve(CONTROL_DIR, target);
+		const base = path.basename(resolvedTarget);
+		if (!base.endsWith(SOCKET_SUFFIX)) return null;
+		const sessionId = base.slice(0, -SOCKET_SUFFIX.length);
+		return isSafeSessionId(sessionId) ? sessionId : null;
+	} catch (error) {
+		if (isErrnoException(error) && error.code === "ENOENT") return null;
+		return null;
+	}
+}
+
+async function getAliasMap(): Promise<Map<string, string[]>> {
+	const aliasMap = new Map<string, string[]>();
+	const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+	for (const entry of entries) {
+		if (!entry.isSymbolicLink()) continue;
+		if (!entry.name.endsWith(".alias")) continue;
+		const aliasPath = path.join(CONTROL_DIR, entry.name);
+		let target: string;
+		try {
+			target = await fs.readlink(aliasPath);
+		} catch {
+			continue;
+		}
+		const resolvedTarget = path.resolve(CONTROL_DIR, target);
+		const aliases = aliasMap.get(resolvedTarget);
+		const aliasName = entry.name.slice(0, -".alias".length);
+		if (aliases) {
+			aliases.push(aliasName);
+		} else {
+			aliasMap.set(resolvedTarget, [aliasName]);
+		}
+	}
+	return aliasMap;
+}
+
+async function isSocketAlive(socketPath: string): Promise<boolean> {
+	return await new Promise((resolve) => {
+		const socket = net.createConnection(socketPath);
+		const timeout = setTimeout(() => {
+			socket.destroy();
+			resolve(false);
+		}, 300);
+
+		const cleanup = (alive: boolean) => {
+			clearTimeout(timeout);
+			socket.removeAllListeners();
+			resolve(alive);
+		};
+
+		socket.once("connect", () => {
+			socket.end();
+			cleanup(true);
+		});
+		socket.once("error", () => {
+			cleanup(false);
+		});
+	});
+}
+
+type LiveSessionInfo = {
+	sessionId: string;
+	name?: string;
+	aliases: string[];
+	socketPath: string;
+};
+
+async function getLiveSessions(): Promise<LiveSessionInfo[]> {
+	await ensureControlDir();
+	const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+	const aliasMap = await getAliasMap();
+	const sessions: LiveSessionInfo[] = [];
+
+	for (const entry of entries) {
+		if (!entry.name.endsWith(SOCKET_SUFFIX)) continue;
+		const socketPath = path.join(CONTROL_DIR, entry.name);
+		const alive = await isSocketAlive(socketPath);
+		if (!alive) continue;
+		const sessionId = entry.name.slice(0, -SOCKET_SUFFIX.length);
+		if (!isSafeSessionId(sessionId)) continue;
+		const aliases = aliasMap.get(socketPath) ?? [];
+		const name = aliases[0];
+		sessions.push({ sessionId, name, aliases, socketPath });
+	}
+
+	sessions.sort((a, b) => (a.name ?? a.sessionId).localeCompare(b.name ?? b.sessionId));
+	return sessions;
+}
+
 async function syncAlias(state: SocketState, ctx: ExtensionContext): Promise<void> {
 	if (!state.server || !state.socketPath) return;
 	const alias = getSessionAlias(ctx);
@@ -785,6 +879,8 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	registerSessionTool(pi, state);
+	registerListSessionsTool(pi);
+	registerControlSessionsCommand(pi);
 
 	const refreshServer = async (ctx: ExtensionContext) => {
 		const enabled = pi.getFlag(CONTROL_FLAG) === true;
@@ -866,13 +962,18 @@ Actions:
 - get_summary: Get a summary of activity since the last user prompt.
 - clear: Rewind session to initial state.
 
+Target selection:
+- sessionId: UUID of the session.
+- sessionName: session name (alias from /name).
+
 Wait behavior (only for action=send):
 - wait_until=turn_end: Wait for the turn to complete, returns last assistant message.
 - wait_until=message_processed: Returns immediately after message is queued.
 
 Messages automatically include sender session info for replies.`,
 		parameters: Type.Object({
-			sessionId: Type.String({ description: "Target session id (UUID)" }),
+			sessionId: Type.Optional(Type.String({ description: "Target session id (UUID)" })),
+			sessionName: Type.Optional(Type.String({ description: "Target session name (alias)" })),
 			action: Type.Optional(
 				StringEnum(["send", "get_message", "get_summary", "clear"] as const, {
 					description: "Action to perform (default: send)",
@@ -894,16 +995,49 @@ Messages automatically include sender session info for replies.`,
 		}),
 		async execute(_toolCallId, params) {
 			const action = params.action ?? "send";
+			const sessionName = params.sessionName?.trim();
+			const sessionId = params.sessionId?.trim();
+			let targetSessionId: string | null = null;
+			const displayTarget = sessionName || sessionId || "";
 
-			if (!isSafeSessionId(params.sessionId)) {
+			if (sessionName) {
+				targetSessionId = await resolveSessionIdFromAlias(sessionName);
+				if (!targetSessionId) {
+					return {
+						content: [{ type: "text", text: "Unknown session name" }],
+						isError: true,
+						details: { error: "Unknown session name" },
+					};
+				}
+			}
+
+			if (sessionId) {
+				if (!isSafeSessionId(sessionId)) {
+					return {
+						content: [{ type: "text", text: "Invalid session id" }],
+						isError: true,
+						details: { error: "Invalid session id" },
+					};
+				}
+				if (targetSessionId && targetSessionId !== sessionId) {
+					return {
+						content: [{ type: "text", text: "Session name does not match session id" }],
+						isError: true,
+						details: { error: "Session name does not match session id" },
+					};
+				}
+				targetSessionId = sessionId;
+			}
+
+			if (!targetSessionId) {
 				return {
-					content: [{ type: "text", text: "Invalid session id" }],
+					content: [{ type: "text", text: "Missing session id or session name" }],
 					isError: true,
-					details: { error: "Invalid session id" },
+					details: { error: "Missing session id or session name" },
 				};
 			}
 
-			const socketPath = getSocketPath(params.sessionId);
+			const socketPath = getSocketPath(targetSessionId);
 			const senderSessionId = state.context?.sessionManager.getSessionId();
 
 			try {
@@ -1045,7 +1179,7 @@ Messages automatically include sender session info for replies.`,
 				}
 
 				return {
-					content: [{ type: "text", text: `Message sent to session ${params.sessionId}` }],
+					content: [{ type: "text", text: `Message sent to session ${displayTarget || targetSessionId}` }],
 					details: result.response.data,
 				};
 			} catch (error) {
@@ -1060,12 +1194,12 @@ Messages automatically include sender session info for replies.`,
 
 		renderCall(args, theme) {
 			const action = args.action ?? "send";
-			const sessionId = args.sessionId ?? "...";
-			const shortSessionId = sessionId.length > 12 ? sessionId.slice(0, 8) + "..." : sessionId;
+			const sessionRef = args.sessionName ?? args.sessionId ?? "...";
+			const shortSessionRef = sessionRef.length > 12 ? sessionRef.slice(0, 8) + "..." : sessionRef;
 
 			// Build the header line
 			let header = theme.fg("toolTitle", theme.bold("→ session "));
-			header += theme.fg("accent", shortSessionId);
+			header += theme.fg("accent", shortSessionRef);
 
 			// Add action-specific info
 			if (action === "send") {
@@ -1191,6 +1325,73 @@ Messages automatically include sender session info for replies.`,
 			const text = result.content[0];
 			const content = text?.type === "text" ? text.text : "(no output)";
 			return new Text(theme.fg("success", "✓ ") + theme.fg("muted", content), 0, 0);
+		},
+	});
+}
+
+// ============================================================================
+// Tool: list_sessions
+// ============================================================================
+
+function registerListSessionsTool(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "list_sessions",
+		label: "List Sessions",
+		description: "List live sessions that expose a control socket (optionally with session names).",
+		parameters: Type.Object({}),
+		async execute() {
+			const sessions = await getLiveSessions();
+
+			if (sessions.length === 0) {
+				return {
+					content: [{ type: "text", text: "No live sessions found." }],
+					details: { sessions: [] },
+				};
+			}
+
+			const lines = sessions.map((session) => {
+				const name = session.name ? ` (${session.name})` : "";
+				return `- ${session.sessionId}${name}`;
+			});
+
+			return {
+				content: [{ type: "text", text: `Live sessions:\n${lines.join("\n")}` }],
+				details: { sessions },
+			};
+		},
+	});
+}
+
+function registerControlSessionsCommand(pi: ExtensionAPI): void {
+	pi.registerCommand("control-sessions", {
+		description: "List controllable sessions (from session-control sockets)",
+		handler: async (_args, ctx) => {
+			if (pi.getFlag(CONTROL_FLAG) !== true) {
+				if (ctx.hasUI) {
+					ctx.ui.notify("Session control not enabled (use --session-control)", "warning");
+				}
+				return;
+			}
+
+			const sessions = await getLiveSessions();
+			const currentSessionId = ctx.sessionManager.getSessionId();
+			const lines = sessions.map((session) => {
+				const name = session.name ? ` (${session.name})` : "";
+				const current = session.sessionId === currentSessionId ? " (current)" : "";
+				return `- ${session.sessionId}${name}${current}`;
+			});
+			const content = sessions.length === 0
+				? "No live sessions found."
+				: `Controllable sessions:\n${lines.join("\n")}`;
+
+			pi.sendMessage(
+				{
+					customType: "control-sessions",
+					content,
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
 		},
 	});
 }
