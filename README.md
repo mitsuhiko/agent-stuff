@@ -10,8 +10,13 @@ All command files are in the [`commands`](commands) folder:
 
 * [`/handoff`](commands/handoff.md) - Creates detailed handoff plan for session continuation
 * [`/pickup`](commands/pickup.md) - Resumes work from previous handoff session
-* [`/make-release`](commands/make-release.md) - Automates repository release with version management
-* [`/update-changelog`](commands/update-changelog.md) - Updates changelog with recent commits
+
+## Plumbing Commands
+
+These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
+
+* [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management
+* [`/update-changelog`](plumbing-commands/update-changelog.md) - Updates changelog with recent commits
 
 ### Handoff/Pickup Usage
 
@@ -29,7 +34,7 @@ It will write a handoff plan into .claude/handoffs which you can then continue i
 
 ### Release Management
 
-The release management commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instance use them in [absurd](https://github.com/earendil-works/absurd) and you can look at the repo to see them in use.
+The plumbing release commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instance use them in [absurd](https://github.com/earendil-works/absurd) and you can look at the repo to see them in use.
 
 ## Skills
 
