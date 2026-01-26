@@ -99,6 +99,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`cwd-history.ts`](pi-extensions/cwd-history.ts) - Displays and manages recent working directory history inside the PI Coding Agent.
 * [`codex-tuning.ts`](pi-extensions/codex-tuning.ts) - Codex tuning helper for collecting samples and tagging outcomes during agent sessions.
 * [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
+* [`whimsical.ts`](pi-extensions/whimsical.ts) - Replaces the default "Thinking..." message with random whimsical phrases like "Reticulating splines...", "Consulting the void...", or "Bribing the compiler...".
 
 ## PI Coding Agent Themes
 
