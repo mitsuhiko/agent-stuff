@@ -126,6 +126,8 @@ interface SocketState {
 	server: net.Server | null;
 	socketPath: string | null;
 	context: ExtensionContext | null;
+	alias: string | null;
+	aliasTimer: ReturnType<typeof setInterval> | null;
 	turnEndSubscriptions: TurnEndSubscription[];
 }
 
@@ -187,6 +189,21 @@ function isSafeSessionId(sessionId: string): boolean {
 	return !sessionId.includes("/") && !sessionId.includes("\\") && !sessionId.includes("..") && sessionId.length > 0;
 }
 
+function isSafeAlias(alias: string): boolean {
+	return !alias.includes("/") && !alias.includes("\\") && !alias.includes("..") && alias.length > 0;
+}
+
+function getAliasPath(alias: string): string {
+	return path.join(CONTROL_DIR, `${alias}.alias`);
+}
+
+function getSessionAlias(ctx: ExtensionContext): string | null {
+	const sessionName = ctx.sessionManager.getSessionName();
+	const alias = sessionName ? sessionName.trim() : "";
+	if (!alias || !isSafeAlias(alias)) return null;
+	return alias;
+}
+
 async function ensureControlDir(): Promise<void> {
 	await fs.mkdir(CONTROL_DIR, { recursive: true });
 }
@@ -199,6 +216,66 @@ async function removeSocket(socketPath: string | null): Promise<void> {
 		if (isErrnoException(error) && error.code !== "ENOENT") {
 			throw error;
 		}
+	}
+}
+
+// TODO: add GC for stale sockets/aliases older than 7 days.
+async function removeAliasesForSocket(socketPath: string | null): Promise<void> {
+	if (!socketPath) return;
+	try {
+		const entries = await fs.readdir(CONTROL_DIR, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isSymbolicLink()) continue;
+			const aliasPath = path.join(CONTROL_DIR, entry.name);
+			let target: string;
+			try {
+				target = await fs.readlink(aliasPath);
+			} catch {
+				continue;
+			}
+			const resolvedTarget = path.resolve(CONTROL_DIR, target);
+			if (resolvedTarget === socketPath) {
+				await fs.unlink(aliasPath);
+			}
+		}
+	} catch (error) {
+		if (isErrnoException(error) && error.code === "ENOENT") return;
+		throw error;
+	}
+}
+
+async function createAliasSymlink(sessionId: string, alias: string): Promise<void> {
+	if (!alias || !isSafeAlias(alias)) return;
+	const aliasPath = getAliasPath(alias);
+	const target = `${sessionId}${SOCKET_SUFFIX}`;
+	try {
+		await fs.unlink(aliasPath);
+	} catch (error) {
+		if (isErrnoException(error) && error.code !== "ENOENT") {
+			throw error;
+		}
+	}
+	try {
+		await fs.symlink(target, aliasPath);
+	} catch (error) {
+		if (isErrnoException(error) && error.code !== "EEXIST") {
+			throw error;
+		}
+	}
+}
+
+async function syncAlias(state: SocketState, ctx: ExtensionContext): Promise<void> {
+	if (!state.server || !state.socketPath) return;
+	const alias = getSessionAlias(ctx);
+	if (alias && alias !== state.alias) {
+		await removeAliasesForSocket(state.socketPath);
+		await createAliasSymlink(ctx.sessionManager.getSessionId(), alias);
+		state.alias = alias;
+		return;
+	}
+	if (!alias && state.alias) {
+		await removeAliasesForSocket(state.socketPath);
+		state.alias = null;
 	}
 }
 
@@ -323,6 +400,9 @@ async function handleCommand(
 ): Promise<void> {
 	const id = "id" in command && typeof command.id === "string" ? command.id : undefined;
 	const respond = (success: boolean, commandName: string, data?: unknown, error?: string) => {
+		if (state.context) {
+			void syncAlias(state, state.context);
+		}
 		writeResponse(socket, { type: "response", command: commandName, success, data, error, id });
 	};
 
@@ -331,6 +411,8 @@ async function handleCommand(
 		respond(false, command.type, undefined, "Session not ready");
 		return;
 	}
+
+	void syncAlias(state, ctx);
 
 	// Abort
 	if (command.type === "abort") {
@@ -505,6 +587,9 @@ async function createServer(pi: ExtensionAPI, state: SocketState, socketPath: st
 
 				const parsed = parseCommand(line);
 				if (parsed.error) {
+					if (state.context) {
+						void syncAlias(state, state.context);
+					}
 					writeResponse(socket, {
 						type: "response",
 						command: "parse",
@@ -628,6 +713,7 @@ async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: Ext
 
 	if (state.socketPath === socketPath && state.server) {
 		state.context = ctx;
+		await syncAlias(state, ctx);
 		return;
 	}
 
@@ -637,12 +723,16 @@ async function startControlServer(pi: ExtensionAPI, state: SocketState, ctx: Ext
 	state.context = ctx;
 	state.socketPath = socketPath;
 	state.server = await createServer(pi, state, socketPath);
+	state.alias = null;
+	await syncAlias(state, ctx);
 }
 
 async function stopControlServer(state: SocketState): Promise<void> {
 	if (!state.server) {
+		await removeAliasesForSocket(state.socketPath);
 		await removeSocket(state.socketPath);
 		state.socketPath = null;
+		state.alias = null;
 		return;
 	}
 
@@ -651,7 +741,9 @@ async function stopControlServer(state: SocketState): Promise<void> {
 	state.turnEndSubscriptions = [];
 	await new Promise<void>((resolve) => state.server?.close(() => resolve()));
 	state.server = null;
+	await removeAliasesForSocket(socketPath);
 	await removeSocket(socketPath);
+	state.alias = null;
 }
 
 function updateStatus(ctx: ExtensionContext | null, enabled: boolean): void {
@@ -687,6 +779,8 @@ export default function (pi: ExtensionAPI) {
 		server: null,
 		socketPath: null,
 		context: null,
+		alias: null,
+		aliasTimer: null,
 		turnEndSubscriptions: [],
 	};
 
@@ -695,12 +789,22 @@ export default function (pi: ExtensionAPI) {
 	const refreshServer = async (ctx: ExtensionContext) => {
 		const enabled = pi.getFlag(CONTROL_FLAG) === true;
 		if (!enabled) {
+			if (state.aliasTimer) {
+				clearInterval(state.aliasTimer);
+				state.aliasTimer = null;
+			}
 			await stopControlServer(state);
 			updateStatus(ctx, false);
 			updateSessionEnv(ctx, false);
 			return;
 		}
 		await startControlServer(pi, state, ctx);
+		if (!state.aliasTimer) {
+			state.aliasTimer = setInterval(() => {
+				if (!state.context) return;
+				void syncAlias(state, state.context);
+			}, 1000);
+		}
 		updateStatus(ctx, true);
 		updateSessionEnv(ctx, true);
 	};
@@ -714,6 +818,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		if (state.aliasTimer) {
+			clearInterval(state.aliasTimer);
+			state.aliasTimer = null;
+		}
 		updateStatus(state.context, false);
 		updateSessionEnv(state.context, false);
 		await stopControlServer(state);
@@ -723,6 +831,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", (event: TurnEndEvent, ctx: ExtensionContext) => {
 		if (state.turnEndSubscriptions.length === 0) return;
 
+		void syncAlias(state, ctx);
 		const lastMessage = getLastAssistantMessage(ctx);
 		const eventData = { message: lastMessage, turnIndex: event.turnIndex };
 
