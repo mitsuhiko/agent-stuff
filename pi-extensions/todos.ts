@@ -134,7 +134,8 @@ type TodoMenuAction =
 	| "reopen"
 	| "release"
 	| "delete"
-	| "copy"
+	| "copyPath"
+	| "copyText"
 	| "view";
 
 type TodoToolDetails =
@@ -467,7 +468,8 @@ class TodoActionMenuComponent extends Container {
 			...(todo.assigned_to_session
 				? [{ value: "release", label: "release", description: "Release assignment" }]
 				: []),
-			{ value: "copy", label: "copy", description: "Copy path to clipboard" },
+			{ value: "copyPath", label: "copy path", description: "Copy absolute path to clipboard" },
+			{ value: "copyText", label: "copy text", description: "Copy title and body to clipboard" },
 			{ value: "delete", label: "delete", description: "Delete todo" },
 		];
 
@@ -1848,12 +1850,23 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 				const copyTodoPathToClipboard = (todoId: string) => {
 					const filePath = getTodoPath(todosDir, todoId);
-					const relativePath = path.relative(ctx.cwd, filePath);
-					const displayPath =
-						relativePath && !relativePath.startsWith("..") ? relativePath : filePath;
+					const absolutePath = path.resolve(filePath);
 					try {
-						copyToClipboard(displayPath);
-						ctx.ui.notify(`Copied ${displayPath} to clipboard`, "info");
+						copyToClipboard(absolutePath);
+						ctx.ui.notify(`Copied ${absolutePath} to clipboard`, "info");
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						ctx.ui.notify(message, "error");
+					}
+				};
+
+				const copyTodoTextToClipboard = (record: TodoRecord) => {
+					const title = record.title || "(untitled)";
+					const body = record.body?.trim() || "";
+					const text = body ? `# ${title}\n\n${body}` : `# ${title}`;
+					try {
+						copyToClipboard(text);
+						ctx.ui.notify("Copied todo text to clipboard", "info");
 					} catch (error) {
 						const message = error instanceof Error ? error.message : String(error);
 						ctx.ui.notify(message, "error");
@@ -1902,8 +1915,12 @@ export default function todosExtension(pi: ExtensionAPI) {
 					if (action === "view") {
 						return "stay";
 					}
-					if (action === "copy") {
+					if (action === "copyPath") {
 						copyTodoPathToClipboard(record.id);
+						return "stay";
+					}
+					if (action === "copyText") {
+						copyTodoTextToClipboard(record);
 						return "stay";
 					}
 
