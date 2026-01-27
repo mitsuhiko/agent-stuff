@@ -653,7 +653,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerShortcut("ctrl+r", {
+	pi.registerShortcut("ctrl+shift+f", {
 		description: "Reveal the latest file reference in Finder",
 		handler: async (ctx) => {
 			const entries = ctx.sessionManager.getBranch();
