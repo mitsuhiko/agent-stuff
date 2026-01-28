@@ -3,6 +3,7 @@
  *
  * Provides a `/review` command that prompts the agent to review code changes.
  * Supports multiple review modes:
+ * - Review a GitHub pull request (checks out the PR locally)
  * - Review against a base branch (PR style)
  * - Review uncommitted changes
  * - Review a specific commit
@@ -10,10 +11,14 @@
  *
  * Usage:
  * - `/review` - show interactive selector
+ * - `/review pr 123` - review PR #123 (checks out locally)
+ * - `/review pr https://github.com/owner/repo/pull/123` - review PR from URL
  * - `/review uncommitted` - review uncommitted changes directly
  * - `/review branch main` - review against main branch
  * - `/review commit abc123` - review specific commit
  * - `/review custom "check for security issues"` - custom instructions
+ *
+ * Note: PR review requires a clean working tree (no uncommitted changes to tracked files).
  */
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
@@ -30,7 +35,8 @@ type ReviewTarget =
 	| { type: "uncommitted" }
 	| { type: "baseBranch"; branch: string }
 	| { type: "commit"; sha: string; title?: string }
-	| { type: "custom"; instructions: string };
+	| { type: "custom"; instructions: string }
+	| { type: "pullRequest"; prNumber: number; baseBranch: string; title: string };
 
 // Prompts (adapted from Codex)
 const UNCOMMITTED_PROMPT =
@@ -46,6 +52,12 @@ const COMMIT_PROMPT_WITH_TITLE =
 	'Review the code changes introduced by commit {sha} ("{title}"). Provide prioritized, actionable findings.';
 
 const COMMIT_PROMPT = "Review the code changes introduced by commit {sha}. Provide prioritized, actionable findings.";
+
+const PULL_REQUEST_PROMPT =
+	'Review pull request #{prNumber} ("{title}") against the base branch \'{baseBranch}\'. The merge base commit for this comparison is {mergeBaseSha}. Run `git diff {mergeBaseSha}` to inspect the changes that would be merged. Provide prioritized, actionable findings.';
+
+const PULL_REQUEST_PROMPT_FALLBACK =
+	'Review pull request #{prNumber} ("{title}") against the base branch \'{baseBranch}\'. Start by finding the merge base between the current branch and {baseBranch} (e.g., `git merge-base HEAD {baseBranch}`), then run `git diff` against that SHA to see the changes that would be merged. Provide prioritized, actionable findings.';
 
 // The detailed review rubric (adapted from Codex's review_prompt.md)
 const REVIEW_RUBRIC = `# Review Guidelines
@@ -183,6 +195,80 @@ async function hasUncommittedChanges(pi: ExtensionAPI): Promise<boolean> {
 }
 
 /**
+ * Check if there are changes that would prevent switching branches
+ * (staged or unstaged changes to tracked files - untracked files are fine)
+ */
+async function hasPendingChanges(pi: ExtensionAPI): Promise<boolean> {
+	// Check for staged or unstaged changes to tracked files
+	const { stdout, code } = await pi.exec("git", ["status", "--porcelain"]);
+	if (code !== 0) return false;
+
+	// Filter out untracked files (lines starting with ??)
+	const lines = stdout.trim().split("\n").filter((line) => line.trim());
+	const trackedChanges = lines.filter((line) => !line.startsWith("??"));
+	return trackedChanges.length > 0;
+}
+
+/**
+ * Parse a PR reference (URL or number) and return the PR number
+ */
+function parsePrReference(ref: string): number | null {
+	const trimmed = ref.trim();
+
+	// Try as a number first
+	const num = parseInt(trimmed, 10);
+	if (!isNaN(num) && num > 0) {
+		return num;
+	}
+
+	// Try to extract from GitHub URL
+	// Formats: https://github.com/owner/repo/pull/123
+	//          github.com/owner/repo/pull/123
+	const urlMatch = trimmed.match(/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)/);
+	if (urlMatch) {
+		return parseInt(urlMatch[1], 10);
+	}
+
+	return null;
+}
+
+/**
+ * Get PR information from GitHub CLI
+ */
+async function getPrInfo(pi: ExtensionAPI, prNumber: number): Promise<{ baseBranch: string; title: string; headBranch: string } | null> {
+	const { stdout, code } = await pi.exec("gh", [
+		"pr", "view", String(prNumber),
+		"--json", "baseRefName,title,headRefName",
+	]);
+
+	if (code !== 0) return null;
+
+	try {
+		const data = JSON.parse(stdout);
+		return {
+			baseBranch: data.baseRefName,
+			title: data.title,
+			headBranch: data.headRefName,
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Checkout a PR using GitHub CLI
+ */
+async function checkoutPr(pi: ExtensionAPI, prNumber: number): Promise<{ success: boolean; error?: string }> {
+	const { stdout, stderr, code } = await pi.exec("gh", ["pr", "checkout", String(prNumber)]);
+
+	if (code !== 0) {
+		return { success: false, error: stderr || stdout || "Failed to checkout PR" };
+	}
+
+	return { success: true };
+}
+
+/**
  * Get the current branch name
  */
 async function getCurrentBranch(pi: ExtensionAPI): Promise<string | null> {
@@ -238,6 +324,21 @@ async function buildReviewPrompt(pi: ExtensionAPI, target: ReviewTarget): Promis
 
 		case "custom":
 			return target.instructions;
+
+		case "pullRequest": {
+			const mergeBase = await getMergeBase(pi, target.baseBranch);
+			if (mergeBase) {
+				return PULL_REQUEST_PROMPT
+					.replace(/{prNumber}/g, String(target.prNumber))
+					.replace(/{title}/g, target.title)
+					.replace(/{baseBranch}/g, target.baseBranch)
+					.replace(/{mergeBaseSha}/g, mergeBase);
+			}
+			return PULL_REQUEST_PROMPT_FALLBACK
+				.replace(/{prNumber}/g, String(target.prNumber))
+				.replace(/{title}/g, target.title)
+				.replace(/{baseBranch}/g, target.baseBranch);
+		}
 	}
 }
 
@@ -256,12 +357,18 @@ function getUserFacingHint(target: ReviewTarget): string {
 		}
 		case "custom":
 			return target.instructions.length > 40 ? target.instructions.slice(0, 37) + "..." : target.instructions;
+
+		case "pullRequest": {
+			const shortTitle = target.title.length > 30 ? target.title.slice(0, 27) + "..." : target.title;
+			return `PR #${target.prNumber}: ${shortTitle}`;
+		}
 	}
 }
 
 // Review preset options for the selector
 const REVIEW_PRESETS = [
-	{ value: "baseBranch", label: "Review against a base branch", description: "(PR Style)" },
+	{ value: "pullRequest", label: "Review a pull request", description: "(GitHub PR)" },
+	{ value: "baseBranch", label: "Review against a base branch", description: "(local)" },
 	{ value: "uncommitted", label: "Review uncommitted changes", description: "" },
 	{ value: "commit", label: "Review a commit", description: "" },
 	{ value: "custom", label: "Custom review instructions", description: "" },
@@ -357,6 +464,9 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 			case "custom":
 				return await showCustomInput(ctx);
+
+			case "pullRequest":
+				return await showPrInput(ctx);
 
 			default:
 				return null;
@@ -508,6 +618,64 @@ export default function reviewExtension(pi: ExtensionAPI) {
 	}
 
 	/**
+	 * Show PR input and handle checkout
+	 */
+	async function showPrInput(ctx: ExtensionContext): Promise<ReviewTarget | null> {
+		// First check for pending changes that would prevent branch switching
+		if (await hasPendingChanges(pi)) {
+			ctx.ui.notify("Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.", "error");
+			return null;
+		}
+
+		// Get PR reference from user
+		const prRef = await ctx.ui.editor(
+			"Enter PR number or URL:",
+			"123 or https://github.com/owner/repo/pull/123",
+		);
+
+		if (!prRef?.trim()) return null;
+
+		const prNumber = parsePrReference(prRef);
+		if (!prNumber) {
+			ctx.ui.notify("Invalid PR reference. Enter a number or GitHub PR URL.", "error");
+			return null;
+		}
+
+		// Get PR info from GitHub
+		ctx.ui.notify(`Fetching PR #${prNumber} info...`, "info");
+		const prInfo = await getPrInfo(pi, prNumber);
+
+		if (!prInfo) {
+			ctx.ui.notify(`Could not find PR #${prNumber}. Make sure gh is authenticated and the PR exists.`, "error");
+			return null;
+		}
+
+		// Check again for pending changes (in case something changed)
+		if (await hasPendingChanges(pi)) {
+			ctx.ui.notify("Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.", "error");
+			return null;
+		}
+
+		// Checkout the PR
+		ctx.ui.notify(`Checking out PR #${prNumber}...`, "info");
+		const checkoutResult = await checkoutPr(pi, prNumber);
+
+		if (!checkoutResult.success) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, "error");
+			return null;
+		}
+
+		ctx.ui.notify(`Checked out PR #${prNumber} (${prInfo.headBranch})`, "info");
+
+		return {
+			type: "pullRequest",
+			prNumber,
+			baseBranch: prInfo.baseBranch,
+			title: prInfo.title,
+		};
+	}
+
+	/**
 	 * Execute the review
 	 */
 	async function executeReview(ctx: ExtensionCommandContext, target: ReviewTarget, useFreshSession: boolean): Promise<void> {
@@ -581,8 +749,9 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 	/**
 	 * Parse command arguments for direct invocation
+	 * Returns the target or a special marker for PR that needs async handling
 	 */
-	function parseArgs(args: string | undefined): ReviewTarget | null {
+	function parseArgs(args: string | undefined): ReviewTarget | { type: "pr"; ref: string } | null {
 		if (!args?.trim()) return null;
 
 		const parts = args.trim().split(/\s+/);
@@ -611,14 +780,64 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				return { type: "custom", instructions };
 			}
 
+			case "pr": {
+				const ref = parts[1];
+				if (!ref) return null;
+				return { type: "pr", ref };
+			}
+
 			default:
 				return null;
 		}
 	}
 
+	/**
+	 * Handle PR checkout and return a ReviewTarget (or null on failure)
+	 */
+	async function handlePrCheckout(ctx: ExtensionContext, ref: string): Promise<ReviewTarget | null> {
+		// First check for pending changes
+		if (await hasPendingChanges(pi)) {
+			ctx.ui.notify("Cannot checkout PR: you have uncommitted changes. Please commit or stash them first.", "error");
+			return null;
+		}
+
+		const prNumber = parsePrReference(ref);
+		if (!prNumber) {
+			ctx.ui.notify("Invalid PR reference. Enter a number or GitHub PR URL.", "error");
+			return null;
+		}
+
+		// Get PR info
+		ctx.ui.notify(`Fetching PR #${prNumber} info...`, "info");
+		const prInfo = await getPrInfo(pi, prNumber);
+
+		if (!prInfo) {
+			ctx.ui.notify(`Could not find PR #${prNumber}. Make sure gh is authenticated and the PR exists.`, "error");
+			return null;
+		}
+
+		// Checkout the PR
+		ctx.ui.notify(`Checking out PR #${prNumber}...`, "info");
+		const checkoutResult = await checkoutPr(pi, prNumber);
+
+		if (!checkoutResult.success) {
+			ctx.ui.notify(`Failed to checkout PR: ${checkoutResult.error}`, "error");
+			return null;
+		}
+
+		ctx.ui.notify(`Checked out PR #${prNumber} (${prInfo.headBranch})`, "info");
+
+		return {
+			type: "pullRequest",
+			prNumber,
+			baseBranch: prInfo.baseBranch,
+			title: prInfo.title,
+		};
+	}
+
 	// Register the /review command
 	pi.registerCommand("review", {
-		description: "Review code changes (uncommitted, branch, commit, or custom)",
+		description: "Review code changes (PR, uncommitted, branch, commit, or custom)",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("Review requires interactive mode", "error");
@@ -639,7 +858,17 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			}
 
 			// Try to parse direct arguments
-			let target = parseArgs(args);
+			let target: ReviewTarget | null = null;
+			const parsed = parseArgs(args);
+
+			if (parsed) {
+				if (parsed.type === "pr") {
+					// Handle PR checkout (async operation)
+					target = await handlePrCheckout(ctx, parsed.ref);
+				} else {
+					target = parsed;
+				}
+			}
 
 			// If no args or invalid args, show selector
 			if (!target) {
