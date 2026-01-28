@@ -1,4 +1,4 @@
-Please update the `CHANGELOG.md` for thie repository with changes between the last release and the current version (`main`) which were not incorporated yet.
+Please update the `CHANGELOG.md` for thie repository with changes between the last release and the current version (`main`) which were not incorporated yet. If `CHANGELOG.md` does not exist, use `CHANGELOG` instead.
 
 Base line version: "$ARGUMENTS"
 
@@ -20,7 +20,7 @@ git log <baseline-version>..HEAD
 ```
 
 ### 3. Update the changelog
-Read the already existing `CHANGELOG.md` and check if there are changes not yet incorporated, then add them. Always add them to the "Unreleased" section only. If there is none yet, add it on the top.
+Read the existing changelog file (`CHANGELOG.md`, or `CHANGELOG` if missing) and check if there are changes not yet incorporated, then add them. Always add them to the "Unreleased" section only. If there is none yet, add it at the top in the same style as the existing changelog (for example, `## Unreleased` vs `## [Unreleased]`).
 
 ## Ground Rules When Writing Changelogs
 
@@ -73,6 +73,7 @@ Here's an example of well-formatted changelog entries (from minijinja):
 
 ## Notes
 
-* If the current CHANGELOG.md already has an "Unreleased" section with content, append to it rather than replacing it
-* Preserve the existing changelog style and formatting
+* If the current changelog already has an "Unreleased" section with content, append to it rather than replacing it
+* Preserve the existing changelog style and formatting (headings, bullet style, ordering, and spacing)
+* If the repo uses a different default branch name, treat that as the "current version" instead of `main`
 * When in doubt about whether a change is significant, err on the side of including it

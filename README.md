@@ -10,13 +10,13 @@ All command files are in the [`commands`](commands) folder:
 
 * [`/handoff`](commands/handoff.md) - Creates detailed handoff plan for session continuation
 * [`/pickup`](commands/pickup.md) - Resumes work from previous handoff session
+* [`/update-changelog`](commands/update-changelog.md) - Updates changelog with recent commits
 
 ## Plumbing Commands
 
 These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
 
 * [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management
-* [`/update-changelog`](plumbing-commands/update-changelog.md) - Updates changelog with recent commits
 
 ### Handoff/Pickup Usage
 
