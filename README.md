@@ -8,6 +8,7 @@ It is released on npm as `mitsupi` for use with the [Pi](https://buildwithpi.ai/
 
 All command files are in the [`commands`](commands) folder:
 
+* [`/commit`](commands/commit.md) - Creates a git commit with a concise Conventional Commits-style subject
 * [`/update-changelog`](commands/update-changelog.md) - Updates changelog with recent commits
 
 ## Plumbing Commands
@@ -24,6 +25,8 @@ The plumbing release commands do not work without tuning!  But you can put claud
 
 All skill files are in the [`skills`](skills) folder:
 
+* [`/commit`](skills/commit) - Claude Skill for creating git commits using concise Conventional Commits-style subjects
+* [`/update-changelog`](skills/update-changelog) - Claude Skill for updating changelogs with notable user-facing changes
 * [`/ghidra`](skills/ghidra) - Claude Skill for reverse engineering binaries using Ghidra's headless analyzer
 * [`/github`](skills/github) - Claude Skill for interacting with GitHub via the `gh` CLI (issues, PRs, runs, and APIs)
 * [`/openscad`](skills/openscad) - Claude Skill for creating and rendering OpenSCAD 3D models and exporting STL files
@@ -58,10 +61,6 @@ In the [`skills/ghidra`](skills/ghidra) folder is a skill for automated reverse 
 ### pi-share
 
 In the [`skills/pi-share`](skills/pi-share) folder is a skill for loading and parsing session transcripts from shittycodingagent.ai (pi-share) URLs.  It fetches gists, decodes embedded session data, and extracts conversation history including messages, tool calls, and system prompts.
-
-### google-meet
-
-In the [`skills/google-meet`](skills/google-meet) folder is a skill for creating Google Meet spaces with auto recording/transcription enabled.  It is currently hardcoded for earendil.com accounts only.
 
 ### anachb
 
