@@ -1,6 +1,6 @@
 ---
 name: commit
-description: "Important guide on how to create git commits using concise Conventional Commits-style subjects"
+description: "Read this skill before making git commits"
 ---
 
 Create a git commit for the current changes using a concise Conventional Commits-style subject.
