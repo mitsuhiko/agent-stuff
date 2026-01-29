@@ -6,10 +6,11 @@ It is released on npm as `mitsupi` for use with the [Pi](https://buildwithpi.ai/
 
 ## Commands
 
-All command files are in the [`commands`](commands) folder:
+Simple trigger commands live in the [`commands`](commands) folder and delegate to the
+matching skills:
 
-* [`/commit`](commands/commit.md) - Creates a git commit with a concise Conventional Commits-style subject
-* [`/update-changelog`](commands/update-changelog.md) - Updates changelog with recent commits
+* [`/commit`](commands/commit.md) - Delegates to the `commit` skill for Conventional Commits-style subjects
+* [`/update-changelog`](commands/update-changelog.md) - Delegates to the `update-changelog` skill for changelog updates
 
 ## Plumbing Commands
 
