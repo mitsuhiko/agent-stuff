@@ -8,8 +8,6 @@ It is released on npm as `mitsupi` for use with the [Pi](https://buildwithpi.ai/
 
 All command files are in the [`commands`](commands) folder:
 
-* [`/handoff`](commands/handoff.md) - Creates detailed handoff plan for session continuation
-* [`/pickup`](commands/pickup.md) - Resumes work from previous handoff session
 * [`/update-changelog`](commands/update-changelog.md) - Updates changelog with recent commits
 
 ## Plumbing Commands
@@ -17,20 +15,6 @@ All command files are in the [`commands`](commands) folder:
 These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
 
 * [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management
-
-### Handoff/Pickup Usage
-
-These are inspired by the idea of Ampcode to replace `/compact` with handoff.  I generally do this already by hand with copy/paste but this is an attempt of automating this:
-
-```
-/handoff "implement phase 1 of our plan"
-```
-
-It will write a handoff plan into .claude/handoffs which you can then continue in a new session:
-
-```
-/pickup name-of-handoff
-```
 
 ### Release Management
 
