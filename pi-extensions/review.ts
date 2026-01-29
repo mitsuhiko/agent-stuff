@@ -30,6 +30,51 @@ import { Container, type SelectItem, SelectList, Text, Key } from "@mariozechner
 // This is intentional - the UI and /end-review command assume a single active review.
 let reviewOriginId: string | undefined = undefined;
 
+const REVIEW_STATE_TYPE = "review-session";
+
+type ReviewSessionState = {
+	active: boolean;
+	originId?: string;
+};
+
+function setReviewWidget(ctx: ExtensionContext, active: boolean) {
+	if (!ctx.hasUI) return;
+	if (!active) {
+		ctx.ui.setWidget("review", undefined);
+		return;
+	}
+
+	ctx.ui.setWidget("review", (_tui, theme) => {
+		const text = new Text(theme.fg("warning", "Review session active, return with /end-review"), 0, 0);
+		return {
+			render(width: number) {
+				return text.render(width);
+			},
+			invalidate() {
+				text.invalidate();
+			},
+		};
+	});
+}
+
+function applyReviewState(ctx: ExtensionContext) {
+	let state: ReviewSessionState | undefined;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type === "custom" && entry.customType === REVIEW_STATE_TYPE) {
+			state = entry.data as ReviewSessionState | undefined;
+		}
+	}
+
+	if (state?.active && state.originId) {
+		reviewOriginId = state.originId;
+		setReviewWidget(ctx, true);
+		return;
+	}
+
+	reviewOriginId = undefined;
+	setReviewWidget(ctx, false);
+}
+
 // Review target types (matching Codex's approach)
 type ReviewTarget =
 	| { type: "uncommitted" }
@@ -375,6 +420,18 @@ const REVIEW_PRESETS = [
 ] as const;
 
 export default function reviewExtension(pi: ExtensionAPI) {
+	pi.on("session_start", (_event, ctx) => {
+		applyReviewState(ctx);
+	});
+
+	pi.on("session_switch", (_event, ctx) => {
+		applyReviewState(ctx);
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		applyReviewState(ctx);
+	});
+
 	/**
 	 * Determine the smart default review type based on git state
 	 */
@@ -735,17 +792,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			ctx.ui.setEditorText("");
 
 			// Show widget indicating review is active
-			ctx.ui.setWidget("review", (_tui, theme) => {
-				const text = new Text(theme.fg("warning", "Review session active, return with /end-review"), 0, 0);
-				return {
-					render(width: number) {
-						return text.render(width);
-					},
-					invalidate() {
-						text.invalidate();
-					},
-				};
-			});
+			setReviewWidget(ctx, true);
+
+			// Persist review state so tree navigation can restore/reset it
+			if (reviewOriginId) {
+				pi.appendEntry(REVIEW_STATE_TYPE, { active: true, originId: reviewOriginId });
+			} else {
+				pi.appendEntry(REVIEW_STATE_TYPE, { active: true });
+			}
 		}
 
 		const prompt = await buildReviewPrompt(pi, target);
@@ -1026,7 +1080,7 @@ Preserve exact file paths, function names, and error messages.
 				}
 
 				// Clear state only on success
-				ctx.ui.setWidget("review", undefined);
+				setReviewWidget(ctx, false);
 				reviewOriginId = undefined;
 
 				if (result.cancelled) {
@@ -1052,7 +1106,7 @@ Preserve exact file paths, function names, and error messages.
 					}
 
 					// Clear state only on success
-					ctx.ui.setWidget("review", undefined);
+					setReviewWidget(ctx, false);
 					reviewOriginId = undefined;
 					ctx.ui.notify("Review complete! Returned to original position.", "info");
 				} catch (error) {
