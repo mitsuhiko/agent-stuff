@@ -1,4 +1,4 @@
-
+# Agent Stuff
 
 This repository contains skills and extensions that I use in some form with projects.  Note that I usually fine-tune these for projects so they might not work without modification for you.
 
@@ -22,38 +22,6 @@ All skill files are in the [`skills`](skills) folder:
 * [`/oebb-scotty`](skills/oebb-scotty) - Claude Skill for Austrian rail travel planning via ÖBB Scotty API
 * [`/frontend-design`](skills/frontend-design) - Claude Skill for designing and implementing distinctive frontend interfaces
 
-### Browser
-
-In the [`skills/web-browser`](skills/web-browser) folder is a Claude Skill that helps it to use puppeteer in a node environment to browse the web.  This significantly improves on using a browser MCP.  You will need to go into the scripts folder once to run `npm i`.  This was stolen from [Mario Zechner](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/).
-
-### tmux
-
-In the [`skills/tmux`](skills/tmux) folder is a Claude Skill that lets it drive tmux directly for interactive CLI workflows (python, gdb, etc.) by sending keystrokes and scraping pane output.  It uses stock tmux on macOS/Linux and includes helper scripts in `scripts` to find sessions and wait for prompts.
-
-### sentry
-
-In the [`skills/sentry`](skills/sentry) folder there is an alternative way to access Sentry as a Claude Skill.  I found the other methods to talk to Sentry token inefficient and just not great.  Right now it can only read issues though and might not be ideal yet.
-
-### improve-skill
-
-In the [`skills/improve-skill`](skills/improve-skill) folder is a skill that helps analyze coding agent sessions to improve or create new skills.  It works with Claude Code, Pi, and Codex session files.  Ask the agent to "improve the sentry skill based on this session" or "create a new skill from this session" to use it.
-
-### ghidra
-
-In the [`skills/ghidra`](skills/ghidra) folder is a skill for automated reverse engineering using Ghidra's headless analyzer.  It can decompile binaries to C code, extract functions, strings, symbols, and analyze call graphs without needing the GUI.  Requires Ghidra installed (on macOS: `brew install --cask ghidra`).
-
-### pi-share
-
-In the [`skills/pi-share`](skills/pi-share) folder is a skill for loading and parsing session transcripts from shittycodingagent.ai (pi-share) URLs.  It fetches gists, decodes embedded session data, and extracts conversation history including messages, tool calls, and system prompts.
-
-### anachb
-
-In the [`skills/anachb`](skills/anachb) folder is a skill for querying Austrian public transport via the VOR AnachB API.  It includes shell scripts for searching stations, getting real-time departures, planning routes between locations, and checking service disruptions.  Covers all Austrian public transport including trains, U-Bahn, trams, and buses.
-
-### oebb-scotty
-
-In the [`skills/oebb-scotty`](skills/oebb-scotty) folder is a skill for Austrian rail travel planning via the ÖBB Scotty HAFAS API.  It documents how to search locations, plan trips between stations, get departure/arrival boards, and fetch service alerts.  Includes jq filters for extracting concise trip summaries from verbose API responses.
-
 ## PI Coding Agent Extensions
 
 Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](pi-extensions) folder:
@@ -62,7 +30,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`answer.ts`](pi-extensions/answer.ts) - Alternative to `qna.ts` with a custom interactive TUI for answering questions one by one.
 * [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions. Includes Ctrl+R shortcut.
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
-* [`reveal.ts`](pi-extensions/reveal.ts) - Finder/Quick Look helper that browses session file references via Ctrl+F or `/files`, with Ctrl+R revealing the latest file and Ctrl+Shift+R opening Quick Look on macOS.
+* [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`cwd-history.ts`](pi-extensions/cwd-history.ts) - Displays and manages recent working directory history inside the PI Coding Agent.
 * [`codex-tuning.ts`](pi-extensions/codex-tuning.ts) - Codex tuning helper for collecting samples and tagging outcomes during agent sessions.
 * [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
