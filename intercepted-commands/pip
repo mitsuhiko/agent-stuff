@@ -1,0 +1,7 @@
+#!/bin/bash
+echo "Error: pip is disabled. Use uv instead:" >&2
+echo "" >&2
+echo "  To install a package for a script: uv run --with PACKAGE python script.py" >&2
+echo "  To add a dependency to the project: uv add PACKAGE" >&2
+echo "" >&2
+exit 1

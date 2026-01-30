@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Check for disallowed module invocations
+for arg in "$@"; do
+    case "$arg" in
+        -mpip|-m\ pip|pip)
+            echo "Error: 'python -m pip' is disabled. Use uv instead:" >&2
+            echo "" >&2
+            echo "  To install a package for a script: uv run --with PACKAGE python script.py" >&2
+            echo "  To add a dependency to the project: uv add PACKAGE" >&2
+            echo "" >&2
+            exit 1
+            ;;
+        -mvenv|-m\ venv|venv)
+            echo "Error: 'python -m venv' is disabled. Use uv instead:" >&2
+            echo "" >&2
+            echo "  To create a virtual environment: uv venv" >&2
+            echo "" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Check for -m flag followed by pip or venv
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-m" ]; then
+        case "$arg" in
+            pip)
+                echo "Error: 'python -m pip' is disabled. Use uv instead:" >&2
+                echo "" >&2
+                echo "  To install a package for a script: uv run --with PACKAGE python script.py" >&2
+                echo "  To add a dependency to the project: uv add PACKAGE" >&2
+                echo "" >&2
+                exit 1
+                ;;
+            venv)
+                echo "Error: 'python -m venv' is disabled. Use uv instead:" >&2
+                echo "" >&2
+                echo "  To create a virtual environment: uv venv" >&2
+                echo "" >&2
+                exit 1
+                ;;
+        esac
+    fi
+    prev="$arg"
+done
+
+# Dispatch to uv run python
+exec uv run python "$@"
