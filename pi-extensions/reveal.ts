@@ -646,7 +646,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerShortcut("ctrl+f", {
+	pi.registerShortcut("ctrl+shift+o", {
 		description: "Browse files mentioned in the session",
 		handler: async (ctx) => {
 			await runFileBrowser(pi, ctx);
