@@ -57,13 +57,19 @@ function setReviewWidget(ctx: ExtensionContext, active: boolean) {
 	});
 }
 
-function applyReviewState(ctx: ExtensionContext) {
+function getReviewState(ctx: ExtensionContext): ReviewSessionState | undefined {
 	let state: ReviewSessionState | undefined;
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type === "custom" && entry.customType === REVIEW_STATE_TYPE) {
 			state = entry.data as ReviewSessionState | undefined;
 		}
 	}
+
+	return state;
+}
+
+function applyReviewState(ctx: ExtensionContext) {
+	const state = getReviewState(ctx);
 
 	if (state?.active && state.originId) {
 		reviewOriginId = state.originId;
@@ -759,7 +765,15 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		// Handle fresh session mode
 		if (useFreshSession) {
 			// Store current position (where we'll return to)
-			reviewOriginId = ctx.sessionManager.getLeafId() ?? undefined;
+			const originId = ctx.sessionManager.getLeafId() ?? undefined;
+			if (!originId) {
+				ctx.ui.notify("Failed to determine review origin. Try again from a session with messages.", "error");
+				return;
+			}
+			reviewOriginId = originId;
+
+			// Keep a local copy so session_tree events during navigation don't wipe it
+			const lockedOriginId = originId;
 
 			// Find the first user message in the session
 			const entries = ctx.sessionManager.getEntries();
@@ -788,6 +802,9 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				return;
 			}
 
+			// Restore origin after navigation events (session_tree can reset it)
+			reviewOriginId = lockedOriginId;
+
 			// Clear the editor (navigating to user message fills it with the message text)
 			ctx.ui.setEditorText("");
 
@@ -795,11 +812,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			setReviewWidget(ctx, true);
 
 			// Persist review state so tree navigation can restore/reset it
-			if (reviewOriginId) {
-				pi.appendEntry(REVIEW_STATE_TYPE, { active: true, originId: reviewOriginId });
-			} else {
-				pi.appendEntry(REVIEW_STATE_TYPE, { active: true });
-			}
+			pi.appendEntry(REVIEW_STATE_TYPE, { active: true, originId: lockedOriginId });
 		}
 
 		const prompt = await buildReviewPrompt(pi, target);
@@ -1031,8 +1044,18 @@ Preserve exact file paths, function names, and error messages.
 
 			// Check if we're in a fresh session review
 			if (!reviewOriginId) {
-				ctx.ui.notify("Not in a review branch (use /review first, or review was started in current session mode)", "info");
-				return;
+				const state = getReviewState(ctx);
+				if (state?.active && state.originId) {
+					reviewOriginId = state.originId;
+				} else if (state?.active) {
+					setReviewWidget(ctx, false);
+					pi.appendEntry(REVIEW_STATE_TYPE, { active: false });
+					ctx.ui.notify("Review state was missing origin info; cleared review status.", "warning");
+					return;
+				} else {
+					ctx.ui.notify("Not in a review branch (use /review first, or review was started in current session mode)", "info");
+					return;
+				}
 			}
 
 			// Ask about summarization (Summarize is default/first option)
@@ -1082,6 +1105,7 @@ Preserve exact file paths, function names, and error messages.
 				// Clear state only on success
 				setReviewWidget(ctx, false);
 				reviewOriginId = undefined;
+				pi.appendEntry(REVIEW_STATE_TYPE, { active: false });
 
 				if (result.cancelled) {
 					ctx.ui.notify("Navigation cancelled", "info");
@@ -1108,6 +1132,7 @@ Preserve exact file paths, function names, and error messages.
 					// Clear state only on success
 					setReviewWidget(ctx, false);
 					reviewOriginId = undefined;
+					pi.appendEntry(REVIEW_STATE_TYPE, { active: false });
 					ctx.ui.notify("Review complete! Returned to original position.", "info");
 				} catch (error) {
 					// Keep state so they can try again
