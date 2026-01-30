@@ -1,26 +1,8 @@
-# Agent Stuff
 
-This repository contains command files and skills that I use in some form with projects.  Note that I usually fine-tune these for projects so they might not work without modification for you.
+
+This repository contains skills and extensions that I use in some form with projects.  Note that I usually fine-tune these for projects so they might not work without modification for you.
 
 It is released on npm as `mitsupi` for use with the [Pi](https://buildwithpi.ai/) package loader.
-
-## Commands
-
-Simple trigger commands live in the [`commands`](commands) folder and delegate to the
-matching skills:
-
-* [`/commit`](commands/commit.md) - Delegates to the `commit` skill for Conventional Commits-style subjects
-* [`/update-changelog`](commands/update-changelog.md) - Delegates to the `update-changelog` skill for changelog updates
-
-## Plumbing Commands
-
-These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
-
-* [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management
-
-### Release Management
-
-The plumbing release commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instance use them in [absurd](https://github.com/earendil-works/absurd) and you can look at the repo to see them in use.
 
 ## Skills
 
@@ -89,3 +71,13 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 ## PI Coding Agent Themes
 
 This repository includes custom themes for the PI Coding Agent. The themes can be found in the [`pi-themes`](pi-themes) folder and customize the appearance and behavior of the agent interface.
+
+## Plumbing Commands
+
+These command files need customization before use. They live in [`plumbing-commands`](plumbing-commands):
+
+* [`/make-release`](plumbing-commands/make-release.md) - Automates repository release with version management
+
+### Release Management
+
+The plumbing release commands do not work without tuning!  But you can put claude to them and derive actually working ones.  I for instance use them in [absurd](h>
