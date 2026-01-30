@@ -2,10 +2,10 @@
 
 All notable changes to agent-stuff are documented here.
 
-## Unreleased
+## 1.1.1
 
 * Removed the deprecated `qna` extension.
-* Added `uv.ts` to redirect to uv.
+* Added `uv` extension and skill for uv integration.
 
 ## 1.1.0
 
