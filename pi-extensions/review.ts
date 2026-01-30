@@ -18,12 +18,18 @@
  * - `/review commit abc123` - review specific commit
  * - `/review custom "check for security issues"` - custom instructions
  *
+ * Project-specific review guidelines:
+ * - If a REVIEW_GUIDELINES.md file exists in the same directory as .pi,
+ *   its contents are appended to the review prompt.
+ *
  * Note: PR review requires a clean working tree (no uncommitted changes to tracked files).
  */
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, BorderedLoader } from "@mariozechner/pi-coding-agent";
 import { Container, type SelectItem, SelectList, Text, Key } from "@mariozechner/pi-tui";
+import path from "node:path";
+import { promises as fs } from "node:fs";
 
 // State to track fresh session review (where we branched from).
 // Module-level state means only one review can be active at a time.
@@ -173,6 +179,36 @@ Provide your findings in a clear, structured format:
 4. Ignore trivial style issues unless they obscure meaning or violate documented standards.
 
 Output all findings the author would fix if they knew about them. If there are no qualifying findings, explicitly state the code looks good. Don't stop at the first finding - list every qualifying issue.`;
+
+async function loadProjectReviewGuidelines(cwd: string): Promise<string | null> {
+	let currentDir = path.resolve(cwd);
+
+	while (true) {
+		const piDir = path.join(currentDir, ".pi");
+		const guidelinesPath = path.join(currentDir, "REVIEW_GUIDELINES.md");
+
+		const piStats = await fs.stat(piDir).catch(() => null);
+		if (piStats?.isDirectory()) {
+			const guidelineStats = await fs.stat(guidelinesPath).catch(() => null);
+			if (guidelineStats?.isFile()) {
+				try {
+					const content = await fs.readFile(guidelinesPath, "utf8");
+					const trimmed = content.trim();
+					return trimmed ? trimmed : null;
+				} catch {
+					return null;
+				}
+			}
+			return null;
+		}
+
+		const parentDir = path.dirname(currentDir);
+		if (parentDir === currentDir) {
+			return null;
+		}
+		currentDir = parentDir;
+	}
+}
 
 /**
  * Get the merge base between HEAD and a branch
@@ -817,9 +853,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 		const prompt = await buildReviewPrompt(pi, target);
 		const hint = getUserFacingHint(target);
+		const projectGuidelines = await loadProjectReviewGuidelines(ctx.cwd);
 
 		// Combine the review rubric with the specific prompt
-		const fullPrompt = `${REVIEW_RUBRIC}\n\n---\n\nPlease perform a code review with the following focus:\n\n${prompt}`;
+		let fullPrompt = `${REVIEW_RUBRIC}\n\n---\n\nPlease perform a code review with the following focus:\n\n${prompt}`;
+
+		if (projectGuidelines) {
+			fullPrompt += `\n\nThis project has additional instructions for code reviews:\n\n${projectGuidelines}`;
+		}
 
 		const modeHint = useFreshSession ? " (fresh session)" : "";
 		ctx.ui.notify(`Starting review: ${hint}${modeHint}`, "info");
