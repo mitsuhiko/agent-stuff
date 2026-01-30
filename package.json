@@ -1,6 +1,6 @@
 {
   "name": "mitsupi",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "Armin's pi coding agent commands, skills, extensions, and themes",
   "repository": {
     "type": "git",
@@ -15,10 +15,18 @@
     "pi-theme"
   ],
   "pi": {
-    "extensions": ["./pi-extensions"],
-    "skills": ["./skills"],
-    "themes": ["./pi-themes"],
-    "prompts": ["./commands"]
+    "extensions": [
+      "./pi-extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "themes": [
+      "./pi-themes"
+    ],
+    "prompts": [
+      "./commands"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",

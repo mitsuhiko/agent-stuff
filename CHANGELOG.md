@@ -2,7 +2,7 @@
 
 All notable changes to agent-stuff are documented here.
 
-## Unreleased
+## 1.1.0
 
 * Added project review guidelines and preserved review state across navigation.
 * Added the `/diff` command to the unified file browser and merged diff/file workflows.
