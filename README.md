@@ -26,8 +26,7 @@ All skill files are in the [`skills`](skills) folder:
 
 Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](pi-extensions) folder:
 
-* [`qna.ts`](pi-extensions/qna.ts) - Extracts questions from the last assistant message into the editor for easy answering. Uses Claude Haiku for cost-efficient extraction when available.
-* [`answer.ts`](pi-extensions/answer.ts) - Alternative to `qna.ts` with a custom interactive TUI for answering questions one by one.
+* [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
 * [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions. Includes Ctrl+R shortcut.
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.

@@ -2,6 +2,10 @@
 
 All notable changes to agent-stuff are documented here.
 
+## Unreleased
+
+* Removed the deprecated `qna` extension.
+
 ## 1.1.0
 
 * Added project review guidelines and preserved review state across navigation.

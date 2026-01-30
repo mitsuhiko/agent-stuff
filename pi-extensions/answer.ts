@@ -1,7 +1,7 @@
 /**
  * Q&A extraction hook - extracts questions from assistant responses
  *
- * Alternative to qna.ts with a custom interactive TUI for answering questions.
+ * Custom interactive TUI for answering questions.
  *
  * Demonstrates the "prompt generator" pattern with custom TUI:
  * 1. /answer command gets the last assistant message
