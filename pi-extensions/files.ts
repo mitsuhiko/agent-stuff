@@ -1039,13 +1039,6 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("diff", {
-		description: "Browse files with git status and session references",
-		handler: async (_args, ctx) => {
-			await runFileBrowser(pi, ctx);
-		},
-	});
-
 	pi.registerShortcut("ctrl+shift+o", {
 		description: "Browse files mentioned in the session",
 		handler: async (ctx) => {
