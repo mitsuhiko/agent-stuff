@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Markdown, type MarkdownTheme } from "@mariozechner/pi-tui";
 
 /**
  * Send a desktop notification via OSC 777 escape sequence.
@@ -44,8 +45,31 @@ const extractLastAssistantText = (messages: Array<{ role?: string; content?: unk
 	return null;
 };
 
+const plainMarkdownTheme: MarkdownTheme = {
+	heading: (text) => text,
+	link: (text) => text,
+	linkUrl: () => "",
+	code: (text) => text,
+	codeBlock: (text) => text,
+	codeBlockBorder: () => "",
+	quote: (text) => text,
+	quoteBorder: () => "",
+	hr: () => "",
+	listBullet: () => "",
+	bold: (text) => text,
+	italic: (text) => text,
+	strikethrough: (text) => text,
+	underline: (text) => text,
+};
+
+const simpleMarkdown = (text: string, width = 80): string => {
+	const markdown = new Markdown(text, 0, 0, plainMarkdownTheme);
+	return markdown.render(width).join("\n");
+};
+
 const formatNotification = (text: string | null): { title: string; body: string } => {
-	const normalized = text ? text.replace(/\s+/g, " ").trim() : "";
+	const simplified = text ? simpleMarkdown(text) : "";
+	const normalized = simplified.replace(/\s+/g, " ").trim();
 	if (!normalized) {
 		return { title: "Ready for input", body: "" };
 	}
