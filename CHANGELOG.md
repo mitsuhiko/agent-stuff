@@ -4,7 +4,10 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+## 1.2.0
+
 * Updated pi-extensions to use the new `ToolDefinition.execute` parameter order.
+* Fixed notify extension notifications to render plain Markdown.
 
 ## 1.1.1
 
