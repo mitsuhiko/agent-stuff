@@ -21,6 +21,7 @@ All skill files are in the [`skills`](skills) folder:
 * [`/oebb-scotty`](skills/oebb-scotty) - Claude Skill for Austrian rail travel planning via ÖBB Scotty API
 * [`/frontend-design`](skills/frontend-design) - Claude Skill for designing and implementing distinctive frontend interfaces
 * [`/uv`](skills/uv) - Claude Skill for using `uv` for Python dependency management and script execution
+* [`/mermaid`](skills/mermaid) - Claude Skill for creating and validating Mermaid diagrams with the official Mermaid CLI
 
 ## PI Coding Agent Extensions
 
