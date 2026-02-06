@@ -36,6 +36,7 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
 * [`notify.ts`](pi-extensions/notify.ts) - Sends native desktop notifications when the agent finishes (OSC 777 compatible terminals).
 * [`whimsical.ts`](pi-extensions/whimsical.ts) - Replaces the default "Thinking..." message with random whimsical phrases like "Reticulating splines...", "Consulting the void...", or "Bribing the compiler...".
+* [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - Interactive TUI to analyze the last 7/30/90 days of Pi session usage (sessions + cost by model) with a GitHub-style usage graph.
 
 ## PI Coding Agent Themes
 
