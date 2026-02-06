@@ -28,15 +28,17 @@ All skill files are in the [`skills`](skills) folder:
 Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](pi-extensions) folder. The package also ships an extra extension focused on increasing reliability:
 
 * [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
-* [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions. Includes Ctrl+R shortcut.
-* [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
-* [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
+* [`context.ts`](pi-extensions/context.ts) - Quick context breakdown (extensions, skills, AGENTS.md/CLAUDE.md) + token usage; highlights skills that were actually read/loaded.
+* [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
 * [`cwd-history.ts`](pi-extensions/cwd-history.ts) - Displays and manages recent working directory history inside the PI Coding Agent.
-* [`codex-tuning.ts`](pi-extensions/codex-tuning.ts) - Codex tuning helper for collecting samples and tagging outcomes during agent sessions.
-* [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
+* [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
+* [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
 * [`notify.ts`](pi-extensions/notify.ts) - Sends native desktop notifications when the agent finishes (OSC 777 compatible terminals).
-* [`whimsical.ts`](pi-extensions/whimsical.ts) - Replaces the default "Thinking..." message with random whimsical phrases like "Reticulating splines...", "Consulting the void...", or "Bribing the compiler...".
+* [`review.ts`](pi-extensions/review.ts) - Code review command inspired by Codex. Supports reviewing uncommitted changes, against a base branch (PR style), specific commits, or with custom instructions. Includes Ctrl+R shortcut.
 * [`session-breakdown.ts`](pi-extensions/session-breakdown.ts) - Interactive TUI to analyze the last 7/30/90 days of Pi session usage (sessions + cost by model) with a GitHub-style usage graph.
+* [`todos.ts`](pi-extensions/todos.ts) - Todo manager extension with file-backed storage and a TUI for listing and editing todos.
+* [`uv.ts`](pi-extensions/uv.ts) - Helpers for working with uv (Python packaging/workflows).
+* [`whimsical.ts`](pi-extensions/whimsical.ts) - Replaces the default "Thinking..." message with random whimsical phrases like "Reticulating splines...", "Consulting the void...", or "Bribing the compiler...".
 
 ## PI Coding Agent Themes
 
