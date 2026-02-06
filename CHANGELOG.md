@@ -4,6 +4,11 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added `/session-breakdown` command with interactive TUI showing sessions, messages, tokens, and cost over the last 7/30/90 days with a GitHub-style contribution calendar.
+* Added `/context` command for viewing context overview.
+* Added folder snapshot review mode to `/review`.
+* Improved review rubric with lessons from codex.
+
 ## 1.2.0
 
 * Updated pi-extensions to use the new `ToolDefinition.execute` parameter order.
