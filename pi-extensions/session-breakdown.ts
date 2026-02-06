@@ -94,6 +94,25 @@ const RANGE_DAYS = [7, 30, 90] as const;
 
 type MeasurementMode = "sessions" | "messages" | "tokens";
 
+type BreakdownProgressPhase = "scan" | "parse" | "finalize";
+
+interface BreakdownProgressState {
+	phase: BreakdownProgressPhase;
+	foundFiles: number;
+	parsedFiles: number;
+	totalFiles: number;
+	currentFile?: string;
+}
+
+function setBorderedLoaderMessage(loader: BorderedLoader, message: string) {
+	// BorderedLoader wraps a (Cancellable)Loader which supports setMessage(),
+	// but it doesn't expose it publicly. Access the inner loader for progress updates.
+	const inner = (loader as any)["loader"]; // eslint-disable-line @typescript-eslint/no-explicit-any
+	if (inner && typeof inner.setMessage === "function") {
+		inner.setMessage(message);
+	}
+}
+
 // Dark-ish background and empty cell color (close to GitHub dark)
 const DEFAULT_BG: RGB = { r: 13, g: 17, b: 23 };
 const EMPTY_CELL_BG: RGB = { r: 22, g: 27, b: 34 };
@@ -195,6 +214,13 @@ function addDaysLocal(d: Date, days: number): Date {
 	const x = new Date(d);
 	x.setDate(x.getDate() + days);
 	return x;
+}
+
+function countDaysInclusiveLocal(start: Date, end: Date): number {
+	// Avoid ms-based day math because DST transitions can make a “day” 23/25h in local time.
+	let n = 0;
+	for (let d = new Date(start); d <= end; d = addDaysLocal(d, 1)) n++;
+	return n;
 }
 
 function mondayIndex(date: Date): number {
@@ -300,7 +326,12 @@ function extractTokensTotal(usage: any): number {
 	return sum > 0 ? sum : 0;
 }
 
-async function walkSessionFiles(root: string, signal?: AbortSignal): Promise<string[]> {
+async function walkSessionFiles(
+	root: string,
+	startCutoffLocal: Date,
+	signal?: AbortSignal,
+	onFound?: (found: number) => void,
+): Promise<string[]> {
 	const out: string[] = [];
 	const stack: string[] = [root];
 	while (stack.length) {
@@ -318,11 +349,33 @@ async function walkSessionFiles(root: string, signal?: AbortSignal): Promise<str
 			const p = path.join(dir, ent.name);
 			if (ent.isDirectory()) {
 				stack.push(p);
-			} else if (ent.isFile() && ent.name.endsWith(".jsonl")) {
-				out.push(p);
+				continue;
+			}
+			if (!ent.isFile() || !ent.name.endsWith(".jsonl")) continue;
+
+			// Prefer filename timestamp, else fall back to mtime.
+			const startedAt = parseSessionStartFromFilename(ent.name);
+			if (startedAt) {
+				if (localMidnight(startedAt) >= startCutoffLocal) {
+					out.push(p);
+					if (onFound && out.length % 10 === 0) onFound(out.length);
+				}
+				continue;
+			}
+
+			try {
+				const st = await fs.stat(p);
+				const approx = new Date(st.mtimeMs);
+				if (localMidnight(approx) >= startCutoffLocal) {
+					out.push(p);
+					if (onFound && out.length % 10 === 0) onFound(out.length);
+				}
+			} catch {
+				// ignore
 			}
 		}
 	}
+	onFound?.(out.length);
 	return out;
 }
 
@@ -585,7 +638,7 @@ function weeksForRange(range: RangeAgg): number {
 	const end = days[days.length - 1].date;
 	const gridStart = addDaysLocal(start, -mondayIndex(start));
 	const gridEnd = addDaysLocal(end, 6 - mondayIndex(end));
-	const totalGridDays = Math.round((gridEnd.getTime() - gridStart.getTime()) / (24 * 3600 * 1000)) + 1;
+	const totalGridDays = countDaysInclusiveLocal(gridStart, gridEnd);
 	return Math.ceil(totalGridDays / 7);
 }
 
@@ -602,7 +655,7 @@ function renderGraphLines(
 
 	const gridStart = addDaysLocal(start, -mondayIndex(start));
 	const gridEnd = addDaysLocal(end, 6 - mondayIndex(end));
-	const totalGridDays = Math.round((gridEnd.getTime() - gridStart.getTime()) / (24 * 3600 * 1000)) + 1;
+	const totalGridDays = countDaysInclusiveLocal(gridStart, gridEnd);
 	const weeks = Math.ceil(totalGridDays / 7);
 
 	const cellWidth = Math.max(1, Math.floor(options?.cellWidth ?? 1));
@@ -788,37 +841,37 @@ function rangeSummary(range: RangeAgg, days: number, mode: MeasurementMode): str
 	return `Last ${days} days: ${formatCount(range.sessions)} sessions · ${costPart}`;
 }
 
-async function computeBreakdown(signal?: AbortSignal): Promise<BreakdownData> {
+async function computeBreakdown(
+	signal?: AbortSignal,
+	onProgress?: (update: Partial<BreakdownProgressState>) => void,
+): Promise<BreakdownData> {
 	const now = new Date();
 	const ranges = new Map<number, RangeAgg>();
 	for (const d of RANGE_DAYS) ranges.set(d, buildRangeAgg(d, now));
 	const range90 = ranges.get(90)!;
 	const start90 = range90.days[0].date;
 
-	const files = await walkSessionFiles(SESSION_ROOT, signal);
+	onProgress?.({ phase: "scan", foundFiles: 0, parsedFiles: 0, totalFiles: 0, currentFile: undefined });
 
-	// Pre-filter by timestamp in file name, else mtime.
-	const candidates: string[] = [];
-	for (const filePath of files) {
-		if (signal?.aborted) break;
-		const startedAt = parseSessionStartFromFilename(path.basename(filePath));
-		if (startedAt) {
-			if (localMidnight(startedAt) < start90) continue;
-			candidates.push(filePath);
-			continue;
-		}
-		try {
-			const st = await fs.stat(filePath);
-			const approx = new Date(st.mtimeMs);
-			if (localMidnight(approx) < start90) continue;
-			candidates.push(filePath);
-		} catch {
-			// ignore
-		}
-	}
+	const candidates = await walkSessionFiles(SESSION_ROOT, start90, signal, (found) => {
+		onProgress?.({ phase: "scan", foundFiles: found });
+	});
 
+	const totalFiles = candidates.length;
+	onProgress?.({
+		phase: "parse",
+		foundFiles: totalFiles,
+		totalFiles,
+		parsedFiles: 0,
+		currentFile: totalFiles > 0 ? path.basename(candidates[0]!) : undefined,
+	});
+
+	let parsedFiles = 0;
 	for (const filePath of candidates) {
 		if (signal?.aborted) break;
+		parsedFiles += 1;
+		onProgress?.({ phase: "parse", parsedFiles, totalFiles, currentFile: path.basename(filePath) });
+
 		const session = await parseSessionFile(filePath, signal);
 		if (!session) continue;
 
@@ -831,6 +884,8 @@ async function computeBreakdown(signal?: AbortSignal): Promise<BreakdownData> {
 			addSessionToRange(range, session);
 		}
 	}
+
+	onProgress?.({ phase: "finalize", currentFile: undefined });
 
 	const palette = choosePaletteFromLast30Days(ranges.get(30)!, 4);
 	return { generatedAt: now, ranges, palette };
@@ -1025,19 +1080,67 @@ export default function sessionBreakdownExtension(pi: ExtensionAPI) {
 				return;
 			}
 
+			let aborted = false;
 			const data = await ctx.ui.custom<BreakdownData | null>((tui, theme, _kb, done) => {
-				const loader = new BorderedLoader(tui, theme, "Analyzing sessions (last 90 days)…");
-				loader.onAbort = () => done(null);
+				const baseMessage = "Analyzing sessions (last 90 days)…";
+				const loader = new BorderedLoader(tui, theme, baseMessage);
 
-				computeBreakdown(loader.signal)
-					.then((d) => done(d))
-					.catch(() => done(null));
+				const startedAt = Date.now();
+				const progress: BreakdownProgressState = {
+					phase: "scan",
+					foundFiles: 0,
+					parsedFiles: 0,
+					totalFiles: 0,
+					currentFile: undefined,
+				};
+
+				const renderMessage = (): string => {
+					const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+					if (progress.phase === "scan") {
+						return `${baseMessage}  scanning (${formatCount(progress.foundFiles)} files) · ${elapsed}s`;
+					}
+					if (progress.phase === "parse") {
+						return `${baseMessage}  parsing (${formatCount(progress.parsedFiles)}/${formatCount(progress.totalFiles)}) · ${elapsed}s`;
+					}
+					return `${baseMessage}  finalizing · ${elapsed}s`;
+				};
+
+				let intervalId: NodeJS.Timeout | null = null;
+				const stopTicker = () => {
+					if (intervalId) {
+						clearInterval(intervalId);
+						intervalId = null;
+					}
+				};
+
+				// Update every 0.5s so long-running scans show some visible progress.
+				setBorderedLoaderMessage(loader, renderMessage());
+				intervalId = setInterval(() => {
+					setBorderedLoaderMessage(loader, renderMessage());
+				}, 500);
+
+				loader.onAbort = () => {
+					aborted = true;
+					stopTicker();
+					done(null);
+				};
+
+				computeBreakdown(loader.signal, (update) => Object.assign(progress, update))
+					.then((d) => {
+						stopTicker();
+						if (!aborted) done(d);
+					})
+					.catch((err) => {
+						stopTicker();
+						console.error("session-breakdown: failed to analyze sessions", err);
+						if (!aborted) done(null);
+					});
 
 				return loader;
 			});
 
 			if (!data) {
-				ctx.ui.notify("Cancelled", "info");
+				ctx.ui.notify(aborted ? "Cancelled" : "Failed to analyze sessions", aborted ? "info" : "error");
 				return;
 			}
 
