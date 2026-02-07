@@ -55,6 +55,15 @@ function getInputBasename(s) {
   return safeName(basename(s));
 }
 
+function makeTmpMdPath(input) {
+  const dir = join(tmpdir(), 'pi-summarize-out');
+  ensureDir(dir);
+  const base = getInputBasename(input);
+  const stamp = Date.now().toString(36);
+  const rand = Math.random().toString(16).slice(2, 8);
+  return join(dir, `${base}-${stamp}-${rand}.md`);
+}
+
 // --- args parsing ---
 let input = null;
 let outPath = null;
@@ -201,28 +210,33 @@ async function main() {
 
   const md = runMarkitdown(input);
 
-  let mdPath = null;
+  // If the user requested an explicit output file, write it there.
   if (outPath) {
     writeFileSync(outPath, md, 'utf-8');
-    mdPath = outPath;
-  } else if (writeTmp || doSummary) {
-    const dir = join(tmpdir(), 'pi-summarize-out');
-    ensureDir(dir);
-    mdPath = join(dir, `${getInputBasename(input)}.md`);
-    writeFileSync(mdPath, md, 'utf-8');
   }
 
-  if (writeTmp && mdPath) {
+  // When summarizing we *always* write a temp markdown file and always return its path as a hint.
+  // When --tmp is passed, we write a temp file as well.
+  let tmpMdPath = null;
+  if (writeTmp || doSummary) {
+    tmpMdPath = makeTmpMdPath(input);
+    writeFileSync(tmpMdPath, md, 'utf-8');
+  }
+
+  if (writeTmp && tmpMdPath) {
     // When only asked for tmp path, print path and exit.
     if (!doSummary && !outPath) {
-      console.log(mdPath);
+      console.log(tmpMdPath);
       return;
     }
   }
 
   if (doSummary) {
-    const summary = summarizeWithPi(md, { mdPathForNote: mdPath, extraPrompt: summaryPrompt });
-    console.log(summary);
+    const summary = summarizeWithPi(md, { mdPathForNote: tmpMdPath ?? outPath, extraPrompt: summaryPrompt });
+    process.stdout.write(summary);
+    if (tmpMdPath) {
+      process.stdout.write(`\n\n[Hint: Full document Markdown saved to: ${tmpMdPath}]\n`);
+    }
     return;
   }
 

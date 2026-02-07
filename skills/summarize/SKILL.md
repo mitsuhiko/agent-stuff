@@ -30,7 +30,7 @@ To write Markdown to a temp file (prints the path) use the wrapper:
 node to-markdown.mjs <url-or-path> --tmp
 ```
 
-Tip: when summarizing, the script will also write a temp markdown file automatically (so you can open/inspect it).
+Tip: when summarizing, the script will **always** write the full converted Markdown to a temp `.md` file and will **always** print a final "Hint" line with the path (so you can open/inspect the full content).
 
 Write Markdown to a specific file:
 
@@ -54,5 +54,5 @@ node to-markdown.mjs <url-or-path> --summary --prompt "Focus on security implica
 
 This will:
 1) convert to Markdown via `uvx markitdown`
-2) (optionally) write the Markdown to a temp file
+2) write the full Markdown to a temp `.md` file and print its path as a "Hint" line
 3) run `pi --model claude-haiku-4-5` (no-tools, no-session) to summarize using your extra prompt
