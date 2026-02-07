@@ -30,7 +30,6 @@ Custom extensions for the PI Coding Agent can be found in the [`pi-extensions`](
 * [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
 * [`context.ts`](pi-extensions/context.ts) - Quick context breakdown (extensions, skills, AGENTS.md/CLAUDE.md) + token usage; highlights skills that were actually read/loaded.
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions etc.).
-* [`cwd-history.ts`](pi-extensions/cwd-history.ts) - Displays and manages recent working directory history inside the PI Coding Agent.
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser that merges git status (dirty first) with session references, plus reveal/open/edit and diff actions.
 * [`loop.ts`](pi-extensions/loop.ts) - Runs a prompt loop for rapid iterative coding with optional auto-continue control.
 * [`notify.ts`](pi-extensions/notify.ts) - Sends native desktop notifications when the agent finishes (OSC 777 compatible terminals).
