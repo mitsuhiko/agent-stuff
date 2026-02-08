@@ -616,15 +616,22 @@ export default function reviewExtension(pi: ExtensionAPI) {
 	 */
 	async function showBranchSelector(ctx: ExtensionContext): Promise<ReviewTarget | null> {
 		const branches = await getLocalBranches(pi);
+		const currentBranch = await getCurrentBranch(pi);
 		const defaultBranch = await getDefaultBranch(pi);
 
-		if (branches.length === 0) {
-			ctx.ui.notify("No branches found", "error");
+		// Never offer the current branch as a base branch (reviewing against itself is meaningless).
+		const candidateBranches = currentBranch ? branches.filter((b) => b !== currentBranch) : branches;
+
+		if (candidateBranches.length === 0) {
+			ctx.ui.notify(
+				currentBranch ? `No other branches found (current branch: ${currentBranch})` : "No branches found",
+				"error",
+			);
 			return null;
 		}
 
 		// Sort branches with default branch first
-		const sortedBranches = branches.sort((a, b) => {
+		const sortedBranches = candidateBranches.sort((a, b) => {
 			if (a === defaultBranch) return -1;
 			if (b === defaultBranch) return 1;
 			return a.localeCompare(b);
