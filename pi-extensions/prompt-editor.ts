@@ -66,6 +66,181 @@ async function ensureDirForFile(filePath: string): Promise<void> {
 	await fs.mkdir(path.dirname(filePath), { recursive: true });
 }
 
+async function getMtimeMs(p: string): Promise<number | null> {
+	try {
+		const st = await fs.stat(p);
+		return st.mtimeMs;
+	} catch {
+		return null;
+	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getLockPathForFile(filePath: string): string {
+	// Lock file next to the json so it works across processes.
+	return `${filePath}.lock`;
+}
+
+async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+	const lockPath = getLockPathForFile(filePath);
+	await ensureDirForFile(lockPath);
+
+	const start = Date.now();
+	while (true) {
+		try {
+			const handle = await fs.open(lockPath, "wx");
+			try {
+				// Best-effort metadata for debugging stale locks.
+				await handle.writeFile(
+					JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }) + "\n",
+					"utf8"
+				);
+			} catch {
+				// ignore
+			}
+
+			try {
+				return await fn();
+			} finally {
+				await handle.close().catch(() => {});
+				await fs.unlink(lockPath).catch(() => {});
+			}
+		} catch (err: any) {
+			if (err?.code !== "EEXIST") throw err;
+
+			// If the lock looks stale (crash), break it.
+			try {
+				const st = await fs.stat(lockPath);
+				if (Date.now() - st.mtimeMs > 30_000) {
+					await fs.unlink(lockPath);
+					continue;
+				}
+			} catch {
+				// ignore
+			}
+
+			if (Date.now() - start > 5_000) {
+				// Don't hang the UI forever.
+				throw new Error(`Timed out waiting for lock: ${lockPath}`);
+			}
+			await sleep(40 + Math.random() * 80);
+		}
+	}
+}
+
+async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+	await ensureDirForFile(filePath);
+
+	const dir = path.dirname(filePath);
+	const base = path.basename(filePath);
+	const tmpPath = path.join(dir, `.${base}.tmp.${process.pid}.${Math.random().toString(16).slice(2)}`);
+
+	await fs.writeFile(tmpPath, content, "utf8");
+
+	try {
+		// POSIX: atomic replace.
+		await fs.rename(tmpPath, filePath);
+	} catch (err: any) {
+		// Windows: rename can't overwrite.
+		if (err?.code === "EEXIST" || err?.code === "EPERM") {
+			await fs.unlink(filePath).catch(() => {});
+			await fs.rename(tmpPath, filePath);
+		} else {
+			// best-effort cleanup
+			await fs.unlink(tmpPath).catch(() => {});
+			throw err;
+		}
+	}
+}
+
+function cloneModesFile(file: ModesFile): ModesFile {
+	// JSON-based clone is fine here (small, plain data structure).
+	return JSON.parse(JSON.stringify(file)) as ModesFile;
+}
+
+type ModeSpecPatch = {
+	provider?: string | null;
+	modelId?: string | null;
+	thinkingLevel?: ThinkingLevel | null;
+	color?: string | null;
+};
+
+type ModesPatch = {
+	currentMode?: ModeName;
+	modes?: Record<ModeName, ModeSpecPatch | null>;
+};
+
+function computeModesPatch(base: ModesFile, next: ModesFile, includeCurrentMode: boolean): ModesPatch | null {
+	const patch: ModesPatch = {};
+
+	if (includeCurrentMode && base.currentMode !== next.currentMode) {
+		patch.currentMode = next.currentMode;
+	}
+
+	const keys = new Set([...Object.keys(base.modes), ...Object.keys(next.modes)]);
+	const modesPatch: Record<ModeName, ModeSpecPatch | null> = {};
+
+	for (const k of keys) {
+		const a = base.modes[k];
+		const b = next.modes[k];
+
+		if (!b) {
+			if (a) modesPatch[k] = null;
+			continue;
+		}
+		if (!a) {
+			modesPatch[k] = { ...b };
+			continue;
+		}
+
+		const diff: ModeSpecPatch = {};
+		const fields: (keyof ModeSpec)[] = ["provider", "modelId", "thinkingLevel", "color"];
+		for (const f of fields) {
+			const av = a[f];
+			const bv = b[f];
+			if (av !== bv) {
+				(diff as any)[f] = bv === undefined ? null : bv;
+			}
+		}
+		if (Object.keys(diff).length > 0) {
+			modesPatch[k] = diff;
+		}
+	}
+
+	if (Object.keys(modesPatch).length > 0) {
+		patch.modes = modesPatch;
+	}
+
+	if (!patch.modes && patch.currentMode === undefined) return null;
+	return patch;
+}
+
+function applyModesPatch(target: ModesFile, patch: ModesPatch): void {
+	if (patch.currentMode !== undefined) {
+		target.currentMode = patch.currentMode;
+	}
+
+	if (!patch.modes) return;
+	for (const [mode, specPatch] of Object.entries(patch.modes)) {
+		if (specPatch === null) {
+			delete target.modes[mode];
+			continue;
+		}
+
+		const targetSpec: Record<string, unknown> = ((target.modes[mode] ??= {}) as any) ?? {};
+		for (const [k, v] of Object.entries(specPatch)) {
+			if (v === null || v === undefined) {
+				delete targetSpec[k];
+			} else {
+				targetSpec[k] = v;
+			}
+		}
+	}
+}
+
 function normalizeThinkingLevel(level: unknown): ThinkingLevel | undefined {
 	if (typeof level !== "string") return undefined;
 	const v = level as ThinkingLevel;
@@ -147,8 +322,7 @@ async function loadModesFile(filePath: string, ctx: ExtensionContext, pi: Extens
 }
 
 async function saveModesFile(filePath: string, data: ModesFile): Promise<void> {
-	await ensureDirForFile(filePath);
-	await fs.writeFile(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+	await atomicWriteUtf8(filePath, JSON.stringify(data, null, 2) + "\n");
 }
 
 function orderedModeNames(modes: Record<string, ModeSpec>): string[] {
@@ -187,9 +361,40 @@ async function resolveModesPath(cwd: string): Promise<string> {
 	return getGlobalModesPath();
 }
 
+function inferModeFromSelection(ctx: ExtensionContext, pi: ExtensionAPI, data: ModesFile): string | null {
+	const provider = ctx.model?.provider;
+	const modelId = ctx.model?.id;
+	const thinkingLevel = pi.getThinkingLevel();
+	if (!provider || !modelId) return null;
+
+	// Only consider persisted/real modes (exclude the overlay "custom").
+	const names = orderedModeNames(data.modes);
+	for (const name of names) {
+		const spec = data.modes[name];
+		if (!spec) continue;
+		if (spec.provider !== provider || spec.modelId !== modelId) continue;
+		if ((spec.thinkingLevel ?? undefined) !== thinkingLevel) continue;
+		return name;
+	}
+
+	return null;
+}
+
 type ModeRuntime = {
 	filePath: string;
+	fileMtimeMs: number | null;
+	/**
+	 * Snapshot of what we last loaded/synced from disk. Used to compute patches so
+	 * multiple running pi processes don't clobber each other's mode edits.
+	 */
+	baseline: ModesFile | null;
 	data: ModesFile;
+
+	/**
+	 * Last non-overlay mode. Used as cycle base while in the overlay "custom" mode.
+	 */
+	lastRealMode: string;
+
 	/**
 	 * The effective current mode. Can temporarily be "custom" (overlay),
 	 * which is *not* persisted and not selectable via /mode.
@@ -201,7 +406,10 @@ type ModeRuntime = {
 
 const runtime: ModeRuntime = {
 	filePath: "",
+	fileMtimeMs: null,
+	baseline: null,
 	data: { version: 1, currentMode: "default", modes: {} },
+	lastRealMode: "default",
 	currentMode: "default",
 	applying: false,
 };
@@ -211,28 +419,57 @@ let requestEditorRender: (() => void) | undefined;
 
 async function ensureRuntime(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const filePath = await resolveModesPath(ctx.cwd);
-	if (runtime.filePath !== filePath) {
+
+	const mtimeMs = await getMtimeMs(filePath);
+	const filePathChanged = runtime.filePath !== filePath;
+	const fileChanged = filePathChanged || runtime.fileMtimeMs !== mtimeMs;
+
+	if (fileChanged) {
 		runtime.filePath = filePath;
+		runtime.fileMtimeMs = mtimeMs;
 		runtime.data = await loadModesFile(filePath, ctx, pi);
+		runtime.baseline = cloneModesFile(runtime.data);
+
 		// Reset overlay when switching projects.
-		runtime.currentMode = runtime.data.currentMode;
+		if (filePathChanged && runtime.currentMode !== CUSTOM_MODE_NAME) {
+			runtime.currentMode = runtime.data.currentMode;
+			runtime.lastRealMode = runtime.currentMode;
+		}
 	}
+
 	ensureDefaultModeEntries(runtime.data, ctx, pi);
+
 	// If we're not in the overlay "custom" mode, ensure currentMode is valid.
 	if (runtime.currentMode !== CUSTOM_MODE_NAME) {
 		if (!runtime.currentMode || !(runtime.currentMode in runtime.data.modes)) {
 			runtime.currentMode = runtime.data.currentMode;
 		}
+		if (!runtime.lastRealMode || !(runtime.lastRealMode in runtime.data.modes)) {
+			runtime.lastRealMode = runtime.currentMode;
+		}
 	}
 }
 
-async function persistRuntime(): Promise<void> {
+async function persistRuntime(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	if (!runtime.filePath) return;
-	// Keep file in sync, but never persist the overlay mode.
-	if (runtime.currentMode !== CUSTOM_MODE_NAME) {
-		runtime.data.currentMode = runtime.currentMode;
-	}
-	await saveModesFile(runtime.filePath, runtime.data);
+
+	// Do not persist currentMode; multiple running pi sessions would fight over it.
+	// Instead we infer the mode on startup from the active model + thinking level.
+	runtime.baseline ??= cloneModesFile(runtime.data);
+	const patch = computeModesPatch(runtime.baseline, runtime.data, false);
+	if (!patch) return;
+
+	await withFileLock(runtime.filePath, async () => {
+		// Merge our local patch into the latest on disk to avoid clobbering other agents.
+		const latest = await loadModesFile(runtime.filePath, ctx, pi);
+		applyModesPatch(latest, patch);
+		ensureDefaultModeEntries(latest, ctx, pi);
+		await saveModesFile(runtime.filePath, latest);
+
+		runtime.data = latest;
+		runtime.baseline = cloneModesFile(latest);
+		runtime.fileMtimeMs = await getMtimeMs(runtime.filePath);
+	});
 }
 
 async function rememberSelectionForMode(pi: ExtensionAPI, ctx: ExtensionContext, mode: string): Promise<void> {
@@ -241,12 +478,21 @@ async function rememberSelectionForMode(pi: ExtensionAPI, ctx: ExtensionContext,
 
 	await ensureRuntime(pi, ctx);
 	const spec = runtime.data.modes[mode] ?? (runtime.data.modes[mode] = {});
+
+	// Only update the stored model if we are actually *using* the mode's stored model.
+	// This avoids "resetting" modes when model application fails (e.g. missing API key).
 	if (ctx.model) {
-		spec.provider = ctx.model.provider;
-		spec.modelId = ctx.model.id;
+		const hasStoredModel = Boolean(spec.provider && spec.modelId);
+		const matchesStoredModel =
+			hasStoredModel && spec.provider === ctx.model.provider && spec.modelId === ctx.model.id;
+		if (!hasStoredModel || matchesStoredModel) {
+			spec.provider = ctx.model.provider;
+			spec.modelId = ctx.model.id;
+		}
 	}
+
 	spec.thinkingLevel = pi.getThinkingLevel();
-	await persistRuntime();
+	await persistRuntime(pi, ctx);
 }
 
 async function rememberCurrentSelection(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
@@ -274,7 +520,9 @@ async function applyMode(pi: ExtensionAPI, ctx: ExtensionContext, mode: string):
 	}
 
 	runtime.currentMode = mode;
-	runtime.data.currentMode = mode;
+	if (mode !== CUSTOM_MODE_NAME) {
+		runtime.lastRealMode = mode;
+	}
 
 	const spec = runtime.data.modes[mode] ?? {};
 
@@ -347,7 +595,7 @@ async function selectModeUI(pi: ExtensionAPI, ctx: ExtensionContext): Promise<vo
 			thinkingLevel: overlay.thinkingLevel,
 			// preserve existingTarget.color
 		};
-		await persistRuntime();
+		await persistRuntime(pi, ctx);
 		await applyMode(pi, ctx, choice);
 		if (ctx.hasUI) {
 			ctx.ui.notify(`Stored ${CUSTOM_MODE_NAME} into "${choice}"`, "info");
@@ -365,7 +613,7 @@ async function cycleMode(pi: ExtensionAPI, ctx: ExtensionContext, direction: 1 |
 	if (names.length === 0) return;
 
 	// If we're currently in the overlay mode, cycle relative to the last real mode.
-	const baseMode = runtime.currentMode === CUSTOM_MODE_NAME ? runtime.data.currentMode : runtime.currentMode;
+	const baseMode = runtime.currentMode === CUSTOM_MODE_NAME ? runtime.lastRealMode : runtime.currentMode;
 	const idx = Math.max(0, names.indexOf(baseMode));
 	const next = names[(idx + direction + names.length) % names.length] ?? names[0]!;
 	await applyMode(pi, ctx, next);
@@ -674,16 +922,42 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		await ensureRuntime(pi, ctx);
 		customOverlay = null;
+
+		const inferred = inferModeFromSelection(ctx, pi, runtime.data);
+		if (inferred) {
+			runtime.currentMode = inferred;
+			runtime.lastRealMode = inferred;
+		} else {
+			// No exact match → treat as overlay.
+			runtime.currentMode = CUSTOM_MODE_NAME;
+			customOverlay = {
+				provider: ctx.model?.provider,
+				modelId: ctx.model?.id,
+				thinkingLevel: pi.getThinkingLevel(),
+			};
+		}
+
 		applyEditor(pi, ctx);
-		// Apply the persisted mode on startup (best-effort).
-		await applyMode(pi, ctx, runtime.currentMode);
 	});
 
 	pi.on("session_switch", async (_event, ctx) => {
 		await ensureRuntime(pi, ctx);
 		customOverlay = null;
+
+		const inferred = inferModeFromSelection(ctx, pi, runtime.data);
+		if (inferred) {
+			runtime.currentMode = inferred;
+			runtime.lastRealMode = inferred;
+		} else {
+			runtime.currentMode = CUSTOM_MODE_NAME;
+			customOverlay = {
+				provider: ctx.model?.provider,
+				modelId: ctx.model?.id,
+				thinkingLevel: pi.getThinkingLevel(),
+			};
+		}
+
 		applyEditor(pi, ctx);
-		await applyMode(pi, ctx, runtime.currentMode);
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
@@ -699,6 +973,9 @@ export default function (pi: ExtensionAPI) {
 
 		// Manual model changes always go into the overlay "custom" mode.
 		await ensureRuntime(pi, ctx);
+		if (runtime.currentMode !== CUSTOM_MODE_NAME) {
+			runtime.lastRealMode = runtime.currentMode;
+		}
 		runtime.currentMode = CUSTOM_MODE_NAME;
 
 		customOverlay = {
