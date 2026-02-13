@@ -1,0 +1,20 @@
+{
+	"name": "browser-tools",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "CDP tools for agent-assisted web automation",
+	"author": "Mario Zechner",
+	"license": "MIT",
+	"dependencies": {
+		"@mozilla/readability": "^0.6.0",
+		"cheerio": "^1.1.2",
+		"jsdom": "^27.0.1",
+		"puppeteer": "^24.31.0",
+		"puppeteer-core": "^23.11.1",
+		"puppeteer-extra": "^3.3.6",
+		"puppeteer-extra-plugin-stealth": "^2.11.2",
+		"turndown": "^7.2.2",
+		"turndown-plugin-gfm": "^1.0.2",
+		"ws": "^8.18.0"
+	}
+}

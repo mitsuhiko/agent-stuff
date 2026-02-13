@@ -1,0 +1,8 @@
+# Headless Chrome profile (copy of user's Chrome profile)
+.headless-profile/
+
+# Node modules
+node_modules/
+
+# Debug files
+debug-*.png
