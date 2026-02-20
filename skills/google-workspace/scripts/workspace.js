@@ -1,48 +1,85 @@
 #!/usr/bin/env node
 
+const vm = require('node:vm');
+const util = require('node:util');
+
 const {
   DEFAULT_VERSIONS,
   authorize,
   formatScopes,
   getGoogleApis,
+  loadToken,
+  resolveAuthMode,
 } = require('./common');
 
 function printHelp() {
-  console.log(`Google Workspace API helper
+  console.log(`Google Workspace API helper (exec-only)
 
 Usage:
-  node scripts/workspace.js call <service> <method.path> [params-json] [--version vX] [--scopes s1,s2]
-  node scripts/workspace.js calendar-today [calendarId]
-  node scripts/workspace.js drive-search <query>
-  node scripts/workspace.js gmail-search <query>
+  node scripts/workspace.js exec [--script 'return 1'] [--timeout 30000] [--scopes s1,s2]
 
-Examples:
-  node scripts/workspace.js call drive files.list '{"pageSize":5,"fields":"files(id,name)"}'
-  node scripts/workspace.js call calendar events.list '{"calendarId":"primary","maxResults":10,"singleEvents":true,"orderBy":"startTime"}'
-  node scripts/workspace.js drive-search "name contains 'Roadmap' and trashed=false"
-  node scripts/workspace.js gmail-search "from:alice@example.com newer_than:7d"
+Example:
+  node scripts/workspace.js exec <<'JS'
+  const me = await workspace.whoAmI();
+  const files = await workspace.call('drive', 'files.list', {
+    pageSize: 3,
+    fields: 'files(id,name)'
+  });
+  return { me, files: files.files };
+  JS
 `);
+}
+
+function parseTimeout(raw) {
+  if (!raw) {
+    throw new Error('--timeout requires a value');
+  }
+
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new Error('--timeout must be a positive number of milliseconds');
+  }
+
+  return Math.min(Math.floor(numeric), 5 * 60_000);
 }
 
 function parseOptions(argv) {
   const positional = [];
   const options = {
-    version: undefined,
     scopes: undefined,
+    timeout: undefined,
+    script: undefined,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--version') {
-      options.version = argv[i + 1];
-      i += 1;
-      continue;
-    }
+
     if (arg === '--scopes') {
-      options.scopes = formatScopes(argv[i + 1]);
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error('--scopes requires a value');
+      }
+      options.scopes = formatScopes(value);
       i += 1;
       continue;
     }
+
+    if (arg === '--timeout') {
+      options.timeout = parseTimeout(argv[i + 1]);
+      i += 1;
+      continue;
+    }
+
+    if (arg === '--script') {
+      const value = argv[i + 1];
+      if (value === undefined) {
+        throw new Error('--script requires a value');
+      }
+      options.script = value;
+      i += 1;
+      continue;
+    }
+
     positional.push(arg);
   }
 
@@ -75,36 +112,26 @@ function resolveMethod(root, methodPath) {
   return { parent, method };
 }
 
-function parseJsonObject(raw, label) {
-  if (!raw) {
-    return {};
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`${label} is not valid JSON: ${error.message}`);
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object`);
-  }
-
-  return parsed;
-}
-
-async function callApi({ service, methodPath, params, version, scopes }) {
+async function callApi({
+  service,
+  methodPath,
+  params,
+  version,
+  scopes,
+  authClient,
+}) {
   const google = getGoogleApis();
   const factory = google[service];
   if (typeof factory !== 'function') {
     throw new Error(`Unknown Google API service: ${service}`);
   }
 
-  const auth = await authorize({
-    interactive: true,
-    scopes: scopes && scopes.length > 0 ? scopes : undefined,
-  });
+  const auth =
+    authClient ||
+    (await authorize({
+      interactive: true,
+      scopes: scopes && scopes.length > 0 ? scopes : undefined,
+    }));
 
   const api = factory({
     version: version || DEFAULT_VERSIONS[service] || 'v1',
@@ -112,162 +139,288 @@ async function callApi({ service, methodPath, params, version, scopes }) {
   });
 
   const { parent, method } = resolveMethod(api, methodPath);
-  const response = await method.call(parent, params);
+  const response = await method.call(parent, params || {});
   return response?.data ?? response;
 }
 
-async function cmdCall(args, options) {
-  const [service, methodPath, paramsRaw] = args;
-
-  if (!service || !methodPath) {
-    throw new Error('Usage: call <service> <method.path> [params-json]');
+function getServiceClient({ google, auth, service, version }) {
+  const factory = google[service];
+  if (typeof factory !== 'function') {
+    throw new Error(`Unknown Google API service: ${service}`);
   }
 
-  const params = parseJsonObject(paramsRaw, 'params-json');
-  const data = await callApi({
-    service,
-    methodPath,
-    params,
-    version: options.version,
-    scopes: options.scopes,
+  return factory({
+    version: version || DEFAULT_VERSIONS[service] || 'v1',
+    auth,
   });
-
-  console.log(JSON.stringify(data, null, 2));
 }
 
-async function cmdCalendarToday(args, options) {
-  const calendarId = args[0] || 'primary';
+function createWorkspaceHelper({ auth, google }) {
+  return {
+    versions: { ...DEFAULT_VERSIONS },
 
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-
-  const data = await callApi({
-    service: 'calendar',
-    methodPath: 'events.list',
-    version: options.version,
-    scopes: options.scopes,
-    params: {
-      calendarId,
-      timeMin: start.toISOString(),
-      timeMax: end.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
+    async call(service, methodPath, params = {}, options = {}) {
+      return callApi({
+        service,
+        methodPath,
+        params,
+        version: options.version,
+        authClient: auth,
+      });
     },
-  });
 
-  console.log(JSON.stringify(data, null, 2));
+    service(service, options = {}) {
+      return getServiceClient({
+        google,
+        auth,
+        service,
+        version: options.version,
+      });
+    },
+
+    async whoAmI() {
+      const oauth2 = google.oauth2({ version: 'v2', auth });
+      const response = await oauth2.userinfo.get();
+      return response?.data ?? response;
+    },
+  };
 }
 
-async function cmdDriveSearch(args, options) {
-  const query = args.join(' ').trim();
-  if (!query) {
-    throw new Error('Usage: drive-search <query>');
+function formatLogArg(value) {
+  if (typeof value === 'string') {
+    return value;
   }
 
-  const data = await callApi({
-    service: 'drive',
-    methodPath: 'files.list',
-    version: options.version,
-    scopes: options.scopes,
-    params: {
-      q: query,
-      pageSize: 20,
-      fields:
-        'nextPageToken, files(id,name,mimeType,modifiedTime,webViewLink)',
-    },
+  return util.inspect(value, {
+    depth: 6,
+    maxArrayLength: 200,
+    breakLength: 120,
+    compact: 2,
   });
-
-  console.log(JSON.stringify(data, null, 2));
 }
 
-async function cmdGmailSearch(args, options) {
-  const query = args.join(' ').trim();
-  if (!query) {
-    throw new Error('Usage: gmail-search <query>');
+function createExecutionConsole(logs) {
+  const write = (level, args) => {
+    logs.push({
+      level,
+      message: args.map(formatLogArg).join(' '),
+      timestamp: new Date().toISOString(),
+    });
+  };
+
+  return {
+    log: (...args) => write('log', args),
+    info: (...args) => write('info', args),
+    warn: (...args) => write('warn', args),
+    error: (...args) => write('error', args),
+    debug: (...args) => write('debug', args),
+  };
+}
+
+function normalizeForJson(value, seen = new WeakSet()) {
+  if (value === null || value === undefined) {
+    return value;
   }
 
-  const list = await callApi({
-    service: 'gmail',
-    methodPath: 'users.messages.list',
-    version: options.version,
-    scopes: options.scopes,
-    params: {
-      userId: 'me',
-      q: query,
-      maxResults: 20,
-    },
-  });
+  if (typeof value === 'bigint') {
+    return `${value}n`;
+  }
 
-  const messages = list.messages || [];
-  const details = [];
+  if (typeof value === 'function') {
+    return `[Function ${value.name || 'anonymous'}]`;
+  }
 
-  for (const message of messages.slice(0, 10)) {
-    const full = await callApi({
-      service: 'gmail',
-      methodPath: 'users.messages.get',
-      version: options.version,
-      scopes: options.scopes,
-      params: {
-        userId: 'me',
-        id: message.id,
-        format: 'metadata',
-        metadataHeaders: ['From', 'Subject', 'Date'],
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeForJson(item, seen));
+  }
+
+  if (typeof value === 'object') {
+    if (seen.has(value)) {
+      return '[Circular]';
+    }
+    seen.add(value);
+
+    const output = {};
+    for (const [key, nested] of Object.entries(value)) {
+      output[key] = normalizeForJson(nested, seen);
+    }
+    return output;
+  }
+
+  return value;
+}
+
+function withTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Execution timed out after ${Math.round(timeoutMs)}ms.`));
+    }, timeoutMs);
+
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
       },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function readStdinText() {
+  return new Promise((resolve, reject) => {
+    if (process.stdin.isTTY) {
+      resolve('');
+      return;
+    }
+
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', reject);
+  });
+}
+
+function errorPayload(error, logs, timeoutMs) {
+  return {
+    ok: false,
+    timeoutMs,
+    logs,
+    error: {
+      name: error?.name || 'Error',
+      message: error?.message || String(error),
+      stack: error?.stack || null,
+    },
+  };
+}
+
+async function cmdExec(args, options) {
+  let script = options.script;
+
+  if (!script && args.length > 0) {
+    script = args.join(' ');
+  }
+
+  if (!script) {
+    script = await readStdinText();
+  }
+
+  script = String(script || '').trim();
+
+  if (!script) {
+    throw new Error(
+      'Usage: exec [--script "..."] (or pipe script via stdin / heredoc)',
+    );
+  }
+
+  const timeoutMs = options.timeout || 30_000;
+  const logs = [];
+
+  try {
+    const auth = await authorize({
+      interactive: true,
+      scopes: options.scopes && options.scopes.length > 0
+        ? options.scopes
+        : undefined,
     });
 
-    details.push({
-      id: message.id,
-      threadId: message.threadId,
-      snippet: full.snippet,
-      payload: full.payload,
-    });
-  }
+    const google = getGoogleApis();
+    const workspace = createWorkspaceHelper({ auth, google });
 
-  console.log(
-    JSON.stringify(
-      {
-        resultCount: messages.length,
-        messages: details,
-      },
-      null,
-      2,
-    ),
-  );
+    const context = vm.createContext({
+      Buffer,
+      URL,
+      URLSearchParams,
+      TextEncoder,
+      TextDecoder,
+      setTimeout,
+      clearTimeout,
+      console: createExecutionConsole(logs),
+      auth,
+      google,
+      workspace,
+    });
+
+    const wrappedScript = `
+(async () => {
+${script}
+})()
+`;
+
+    const compiled = new vm.Script(wrappedScript, {
+      filename: 'workspace-exec.js',
+      displayErrors: true,
+    });
+
+    const resultPromise = Promise.resolve(
+      compiled.runInContext(context, {
+        timeout: Math.min(timeoutMs, 60_000),
+        displayErrors: true,
+      }),
+    );
+
+    const result = await withTimeout(resultPromise, timeoutMs);
+    const token = loadToken();
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          authMode: resolveAuthMode(token),
+          timeoutMs,
+          logs,
+          result: normalizeForJson(result),
+        },
+        null,
+        2,
+      ),
+    );
+  } catch (error) {
+    console.log(JSON.stringify(errorPayload(error, logs, timeoutMs), null, 2));
+    process.exitCode = 1;
+  }
 }
 
 async function main() {
   const { positional, options } = parseOptions(process.argv.slice(2));
   const [command, ...args] = positional;
 
-  if (!command || command === 'help' || command === '--help' || command === '-h') {
+  if (
+    !command ||
+    command === 'help' ||
+    command === '--help' ||
+    command === '-h'
+  ) {
     printHelp();
     return;
   }
 
-  if (command === 'call') {
-    await cmdCall(args, options);
-    return;
+  if (command !== 'exec') {
+    throw new Error(`Unknown command: ${command}. Only 'exec' is supported.`);
   }
 
-  if (command === 'calendar-today') {
-    await cmdCalendarToday(args, options);
-    return;
-  }
-
-  if (command === 'drive-search') {
-    await cmdDriveSearch(args, options);
-    return;
-  }
-
-  if (command === 'gmail-search') {
-    await cmdGmailSearch(args, options);
-    return;
-  }
-
-  throw new Error(`Unknown command: ${command}`);
+  await cmdExec(args, options);
 }
 
 main().catch((error) => {
