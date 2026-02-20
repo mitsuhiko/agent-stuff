@@ -241,7 +241,7 @@ const messages = [
   "Tangling...",
   "Jangling...",
   "Angling...",
-  "Strangling...",
+  "Struggling...",
   "Mingling...",
   "Tingling...",
   "Jingling...",
