@@ -1,0 +1,26 @@
+{
+  "name": "nz-metservice-weather",
+  "version": "1.0.0",
+  "description": "MetService NZ Weather Skill - Fetch current weather and forecasts",
+  "main": "scripts/metservice-weather.ts",
+  "type": "module",
+  "scripts": {
+    "start": "tsx scripts/metservice-weather.ts",
+    "dev": "ts-node scripts/metservice-weather.ts"
+  },
+  "keywords": [
+    "weather",
+    "metservice",
+    "new-zealand",
+    "forecast",
+    "openclaw"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
+    "ts-node": "^10.9.2"
+  }
+}
