@@ -45,3 +45,15 @@ Most commands support `--json` for structured output.  You can use `--jq` to fil
 ```bash
 gh issue list --repo owner/repo --json number,title --jq '.[] | "\(.number): \(.title)"'
 ```
+
+## Use GIT_EDITOR to avoid hanging on git commands
+
+Prefix git commands that may open an interactive editor with `GIT_EDITOR=true` to auto-accept the default message.
+
+```bash
+GIT_EDITOR=true git merge
+GIT_EDITOR=true git rebase --continue
+GIT_EDITOR=true git commit --amend
+```
+
+`GIT_EDITOR` supersedes both `VISUAL` and `EDITOR`, so this works regardless of the user's shell config.
