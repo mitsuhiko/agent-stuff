@@ -964,6 +964,17 @@ function updateSessionEnv(ctx: ExtensionContext | null, enabled: boolean): void 
 	process.env.PI_SESSION_ID = ctx.sessionManager.getSessionId();
 }
 
+// Extension factories run before extension flag values are hydrated into runtime.flagValues,
+// so we inspect argv directly when deciding whether to register tools at load time.
+function wasBooleanFlagPassed(flagName: string): boolean {
+	const flag = `--${flagName}`;
+	return process.argv.slice(2).includes(flag);
+}
+
+function shouldRegisterControlTools(pi: ExtensionAPI): boolean {
+	return pi.getFlag(CONTROL_FLAG) === true || wasBooleanFlagPassed(CONTROL_FLAG);
+}
+
 // ============================================================================
 // Extension Export
 // ============================================================================
@@ -1008,8 +1019,10 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerMessageRenderer(SESSION_MESSAGE_TYPE, renderSessionMessage);
 
-	registerSessionTool(pi, state);
-	registerListSessionsTool(pi);
+	if (shouldRegisterControlTools(pi)) {
+		registerSessionTool(pi, state);
+		registerListSessionsTool(pi);
+	}
 	registerControlSessionsCommand(pi);
 
 	const refreshServer = async (ctx: ExtensionContext) => {
