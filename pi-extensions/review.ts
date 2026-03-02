@@ -28,7 +28,16 @@
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder, BorderedLoader } from "@mariozechner/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import {
+	Container,
+	fuzzyFilter,
+	getEditorKeybindings,
+	Input,
+	type SelectItem,
+	SelectList,
+	Spacer,
+	Text,
+} from "@mariozechner/pi-tui";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 
@@ -993,23 +1002,48 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 			container.addChild(new Text(theme.fg("accent", theme.bold("Select base branch"))));
 
-			const selectList = new SelectList(items, Math.min(items.length, 10), {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			});
+			const searchInput = new Input();
+			container.addChild(searchInput);
+			container.addChild(new Spacer(1));
 
-			// Enable search
-			selectList.searchable = true;
-
-			selectList.onSelect = (item) => done(item.value);
-			selectList.onCancel = () => done(null);
-
-			container.addChild(selectList);
+			const listContainer = new Container();
+			container.addChild(listContainer);
 			container.addChild(new Text(theme.fg("dim", "Type to filter • enter to select • esc to cancel")));
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			let filteredItems = items;
+			let selectList: SelectList | null = null;
+
+			const updateList = () => {
+				listContainer.clear();
+				if (filteredItems.length === 0) {
+					listContainer.addChild(new Text(theme.fg("warning", "  No matching branches")));
+					selectList = null;
+					return;
+				}
+
+				selectList = new SelectList(filteredItems, Math.min(filteredItems.length, 10), {
+					selectedPrefix: (text) => theme.fg("accent", text),
+					selectedText: (text) => theme.fg("accent", text),
+					description: (text) => theme.fg("muted", text),
+					scrollInfo: (text) => theme.fg("dim", text),
+					noMatch: (text) => theme.fg("warning", text),
+				});
+
+				selectList.onSelect = (item) => done(item.value);
+				selectList.onCancel = () => done(null);
+				listContainer.addChild(selectList);
+			};
+
+			const applyFilter = () => {
+				const query = searchInput.getValue();
+				filteredItems = query
+					? fuzzyFilter(items, query, (item) => `${item.label} ${item.value} ${item.description ?? ""}`)
+					: items;
+				updateList();
+			};
+
+			applyFilter();
 
 			return {
 				render(width: number) {
@@ -1019,7 +1053,24 @@ export default function reviewExtension(pi: ExtensionAPI) {
 					container.invalidate();
 				},
 				handleInput(data: string) {
-					selectList.handleInput(data);
+					const kb = getEditorKeybindings();
+					if (
+						kb.matches(data, "selectUp") ||
+						kb.matches(data, "selectDown") ||
+						kb.matches(data, "selectConfirm") ||
+						kb.matches(data, "selectCancel")
+					) {
+						if (selectList) {
+							selectList.handleInput(data);
+						} else if (kb.matches(data, "selectCancel")) {
+							done(null);
+						}
+						tui.requestRender();
+						return;
+					}
+
+					searchInput.handleInput(data);
+					applyFilter();
 					tui.requestRender();
 				},
 			};
@@ -1051,30 +1102,55 @@ export default function reviewExtension(pi: ExtensionAPI) {
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 			container.addChild(new Text(theme.fg("accent", theme.bold("Select commit to review"))));
 
-			const selectList = new SelectList(items, Math.min(items.length, 10), {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			});
+			const searchInput = new Input();
+			container.addChild(searchInput);
+			container.addChild(new Spacer(1));
 
-			// Enable search
-			selectList.searchable = true;
-
-			selectList.onSelect = (item) => {
-				const commit = commits.find((c) => c.sha === item.value);
-				if (commit) {
-					done(commit);
-				} else {
-					done(null);
-				}
-			};
-			selectList.onCancel = () => done(null);
-
-			container.addChild(selectList);
+			const listContainer = new Container();
+			container.addChild(listContainer);
 			container.addChild(new Text(theme.fg("dim", "Type to filter • enter to select • esc to cancel")));
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			let filteredItems = items;
+			let selectList: SelectList | null = null;
+
+			const updateList = () => {
+				listContainer.clear();
+				if (filteredItems.length === 0) {
+					listContainer.addChild(new Text(theme.fg("warning", "  No matching commits")));
+					selectList = null;
+					return;
+				}
+
+				selectList = new SelectList(filteredItems, Math.min(filteredItems.length, 10), {
+					selectedPrefix: (text) => theme.fg("accent", text),
+					selectedText: (text) => theme.fg("accent", text),
+					description: (text) => theme.fg("muted", text),
+					scrollInfo: (text) => theme.fg("dim", text),
+					noMatch: (text) => theme.fg("warning", text),
+				});
+
+				selectList.onSelect = (item) => {
+					const commit = commits.find((c) => c.sha === item.value);
+					if (commit) {
+						done(commit);
+					} else {
+						done(null);
+					}
+				};
+				selectList.onCancel = () => done(null);
+				listContainer.addChild(selectList);
+			};
+
+			const applyFilter = () => {
+				const query = searchInput.getValue();
+				filteredItems = query
+					? fuzzyFilter(items, query, (item) => `${item.label} ${item.value} ${item.description ?? ""}`)
+					: items;
+				updateList();
+			};
+
+			applyFilter();
 
 			return {
 				render(width: number) {
@@ -1084,7 +1160,24 @@ export default function reviewExtension(pi: ExtensionAPI) {
 					container.invalidate();
 				},
 				handleInput(data: string) {
-					selectList.handleInput(data);
+					const kb = getEditorKeybindings();
+					if (
+						kb.matches(data, "selectUp") ||
+						kb.matches(data, "selectDown") ||
+						kb.matches(data, "selectConfirm") ||
+						kb.matches(data, "selectCancel")
+					) {
+						if (selectList) {
+							selectList.handleInput(data);
+						} else if (kb.matches(data, "selectCancel")) {
+							done(null);
+						}
+						tui.requestRender();
+						return;
+					}
+
+					searchInput.handleInput(data);
+					applyFilter();
 					tui.requestRender();
 				},
 			};
