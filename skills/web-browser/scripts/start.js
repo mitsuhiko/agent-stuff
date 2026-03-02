@@ -18,13 +18,20 @@ if (process.argv[2] && process.argv[2] !== "--profile") {
   process.exit(1);
 }
 
-// Kill existing Chrome
-try {
-  execSync("killall 'Google Chrome'", { stdio: "ignore" });
-} catch {}
+async function isDebugEndpointUp() {
+  try {
+    const response = await fetch("http://localhost:9222/json/version");
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
-// Wait a bit for processes to fully die
-await new Promise((r) => setTimeout(r, 1000));
+// If something is already listening on :9222, reuse it instead of killing Chrome.
+if (await isDebugEndpointUp()) {
+  console.log("✓ Chrome already running on :9222 (reusing existing instance)");
+  process.exit(0);
+}
 
 // Setup profile directory
 execSync("mkdir -p ~/.cache/scraping", { stdio: "ignore" });
@@ -37,10 +44,14 @@ if (useProfile) {
   );
 }
 
-// Start Chrome in background (detached so Node can exit)
+// Start a separate Chrome instance in background (detached so Node can exit)
+// `open -na` avoids interfering with an already-running personal Chrome.
 spawn(
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/usr/bin/open",
   [
+    "-na",
+    "Google Chrome",
+    "--args",
     "--remote-debugging-port=9222",
     `--user-data-dir=${process.env["HOME"]}/.cache/scraping`,
     "--profile-directory=Default",
