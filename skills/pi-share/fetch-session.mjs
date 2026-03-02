@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fetch and parse pi-share (shittycodingagent.ai/buildwithpi.ai/buildwithpi.com) session exports.
+ * Fetch and parse pi-share (shittycodingagent.ai/buildwithpi.ai/buildwithpi.com/pi.dev) session exports.
  * 
  * Usage:
  *   node fetch-session.mjs <url-or-gist-id> [--header] [--entries] [--system] [--tools] [--human-summary] [--no-cache]
@@ -51,21 +51,52 @@ function writeCache(gistId, data) {
 
 // Extract gist ID from URL or use directly
 function extractGistId(input) {
-  // Handle full URLs like https://shittycodingagent.ai/session/?<id>
-  const queryMatch = input.match(/[?&]([a-f0-9]{32})/i);
-  if (queryMatch) return queryMatch[1];
+  const HEX_ID_RE = /^[a-f0-9]{8,40}$/i;
+  const normalize = (value = '') => value.trim().replace(/^#/, '');
 
-  // Handle path-based URLs like https://buildwithpi.ai/session/<id>
-  const pathMatch = input.match(/\/session\/?([a-f0-9]{32})/i);
-  if (pathMatch) return pathMatch[1];
-  
-  // Handle direct gist ID
-  if (/^[a-f0-9]{32}$/i.test(input)) return input;
-  
-  // Handle gist.github.com URLs
-  const gistMatch = input.match(/gist\.github\.com\/[^/]+\/([a-f0-9]+)/i);
-  if (gistMatch) return gistMatch[1];
-  
+  // Handle direct gist ID and #<gist-id>
+  const normalizedInput = normalize(input);
+  if (HEX_ID_RE.test(normalizedInput)) return normalizedInput;
+
+  // Parse URL forms (supports shittycodingagent.ai, buildwithpi.ai/.com, pi.dev aliases)
+  try {
+    const url = new URL(input);
+
+    // Handle old query style: /session/?<gist-id>
+    const bareQuery = normalize(url.search.replace(/^\?/, ''));
+    if (HEX_ID_RE.test(bareQuery)) return bareQuery;
+
+    // Handle keyed query params: ?id=<gist-id>, ?gist=<gist-id>, etc.
+    for (const value of url.searchParams.values()) {
+      const normalizedValue = normalize(value);
+      if (HEX_ID_RE.test(normalizedValue)) return normalizedValue;
+    }
+
+    // Handle hash style: /session/#<gist-id>
+    const hashValue = normalize(url.hash);
+    if (HEX_ID_RE.test(hashValue)) return hashValue;
+
+    // Handle path-based URLs like /session/<gist-id>
+    const segments = url.pathname.split('/').filter(Boolean);
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i] === 'session' && HEX_ID_RE.test(segments[i + 1] || '')) {
+        return segments[i + 1];
+      }
+    }
+
+    // Handle gist.github.com URLs
+    if (url.hostname === 'gist.github.com') {
+      const gistCandidate = segments[segments.length - 1];
+      if (HEX_ID_RE.test(gistCandidate || '')) return gistCandidate;
+    }
+  } catch {
+    // Not a URL; continue with regex fallback below
+  }
+
+  // Regex fallback for unknown URL formats containing a gist ID
+  const fallbackMatch = input.match(/([a-f0-9]{8,40})/i);
+  if (fallbackMatch) return fallbackMatch[1];
+
   throw new Error(`Cannot extract gist ID from: ${input}`);
 }
 

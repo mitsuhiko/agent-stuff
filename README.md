@@ -20,7 +20,7 @@ All skills live in the [`skills`](skills) folder:
 * [`/native-web-search`](skills/native-web-search) - Trigger native web search with concise summaries and source URLs.
 * [`/oebb-scotty`](skills/oebb-scotty) - Plan Austrian rail journeys via ÖBB Scotty API.
 * [`/openscad`](skills/openscad) - Create/render OpenSCAD models and export STL files.
-* [`/pi-share`](skills/pi-share) - Load and parse session transcripts from shittycodingagent.ai/buildwithpi URLs.
+* [`/pi-share`](skills/pi-share) - Load and parse session transcripts from shittycodingagent.ai/buildwithpi/pi.dev URLs.
 * [`/sentry`](skills/sentry) - Fetch and analyze Sentry issues, events, transactions, and logs.
 * [`/summarize`](skills/summarize) - Convert files/URLs to Markdown via `uvx markitdown` and summarize.
 * [`/tmux`](skills/tmux) - Drive tmux sessions via keystrokes and pane output scraping.

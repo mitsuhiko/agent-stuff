@@ -1,11 +1,11 @@
 ---
 name: pi-share
-description: "Load and parse session transcripts from shittycodingagent.ai/buildwithpi.ai/buildwithpi.com (pi-share) URLs. Fetches gists, decodes embedded session data, and extracts conversation history."
+description: "Load and parse session transcripts from shittycodingagent.ai/buildwithpi.ai/buildwithpi.com/pi.dev (pi-share) URLs. Fetches gists, decodes embedded session data, and extracts conversation history."
 ---
 
 # pi-share / buildwithpi Session Loader
 
-Load and parse session transcripts from pi-share URLs (shittycodingagent.ai, buildwithpi.ai, buildwithpi.com).
+Load and parse session transcripts from pi-share URLs (shittycodingagent.ai, buildwithpi.ai, buildwithpi.com, pi.dev).
 
 ## When to Use
 
@@ -13,7 +13,10 @@ Load and parse session transcripts from pi-share URLs (shittycodingagent.ai, bui
 - `https://shittycodingagent.ai/session/?<gist_id>`
 - `https://buildwithpi.ai/session/?<gist_id>`
 - `https://buildwithpi.com/session/?<gist_id>`
+- `https://pi.dev/session/?<gist_id>`
+- `https://pi.dev/session/#<gist_id>`
 - Or just a gist ID like `46aee35206aefe99257bc5d5e60c6121`
+- Or hash-prefixed shorthand like `#46aee35206aefe99257bc5d5e60c6121`
 
 **Human summaries:** Use `--human-summary` when the user asks you to:
 - Summarize what a human did in a pi/coding agent session
