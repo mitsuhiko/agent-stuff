@@ -1,3 +1,10 @@
 #!/bin/bash
-echo "Error: Use uv instead of poetry (uv init, uv add, uv sync, uv run)" >&2
+
+echo "Error: poetry is disabled. Use uv instead:" >&2
+echo "" >&2
+echo "  To initialize a project: uv init" >&2
+echo "  To add a dependency: uv add PACKAGE" >&2
+echo "  To sync dependencies: uv sync" >&2
+echo "  To run commands: uv run COMMAND" >&2
+echo "" >&2
 exit 1
