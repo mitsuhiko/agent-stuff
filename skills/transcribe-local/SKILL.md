@@ -1,5 +1,5 @@
 ---
-name: transcribe
+name: transcribe-local
 description: Local speech-to-text transcription using mlx-whisper (Apple Silicon GPU-accelerated). Runs entirely on-device — no API keys, no file size limits, no data leaves the machine. Use this skill whenever the user wants to transcribe audio or video files, convert speech to text, transcribe interviews or recordings, generate subtitles (SRT/VTT), or transcribe content in te reo Māori or other languages. Trigger on phrases like "transcribe this", "convert audio to text", "get a transcript of", "speech to text", or when the user points at an audio/video file and wants its content as text.
 ---
 
