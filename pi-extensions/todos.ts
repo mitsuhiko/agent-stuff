@@ -590,11 +590,11 @@ class TodoDetailOverlayComponent {
 			this.scrollBy(1);
 			return;
 		}
-		if (kb.matches(keyData, "selectPageUp")) {
+		if (kb.matches(keyData, "selectPageUp") || matchesKey(keyData, Key.left)) {
 			this.scrollBy(-this.viewHeight || -1);
 			return;
 		}
-		if (kb.matches(keyData, "selectPageDown")) {
+		if (kb.matches(keyData, "selectPageDown") || matchesKey(keyData, Key.right)) {
 			this.scrollBy(this.viewHeight || 1);
 			return;
 		}
@@ -685,7 +685,8 @@ class TodoDetailOverlayComponent {
 	private buildActionLine(width: number): string {
 		const work = this.theme.fg("accent", "enter") + this.theme.fg("muted", " work on todo");
 		const back = this.theme.fg("dim", "esc back");
-		const pieces = [work, back];
+		const nav = this.theme.fg("dim", "↑/↓: move. ←/→: page.");
+		const pieces = [work, back, nav];
 
 		let line = pieces.join(this.theme.fg("muted", " • "));
 		if (this.totalLines > this.viewHeight) {
