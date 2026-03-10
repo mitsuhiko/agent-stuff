@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_MODEL = "mlx-community/distil-whisper-large-v3"
 
 
 def main():

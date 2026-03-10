@@ -42,23 +42,38 @@ uv run {baseDir}/scripts/transcribe.py audio.mp3 -o /tmp/transcript.txt
 | `--output` / `-o` | alongside input | Override output file path |
 | `--initial-prompt` | none | Vocabulary hint for first window |
 | `--translate` | off | Translate to English instead of transcribing |
-| `--model` | `whisper-large-v3-turbo` | See models below |
+| `--model` | `distil-whisper-large-v3` | See models below |
 
 ## Models
 
-| Model | Speed | Accuracy | When to use |
-|-------|-------|----------|-------------|
-| `mlx-community/whisper-large-v3-turbo` | **Fast** | High | Default — good for almost everything |
-| `mlx-community/whisper-large-v3` | Slower | **Highest** | Use when accuracy matters most (Māori, quiet audio, accents) |
-| `mlx-community/distil-whisper-large-v3` | Fastest | Good | Long files where speed matters |
+| Model | RAM | Speed | Accuracy | When to use |
+|-------|-----|-------|----------|-------------|
+| `mlx-community/distil-whisper-large-v3` | ~1GB | **Fastest** | Good | Safe for any Mac, long files |
+| `mlx-community/whisper-large-v3-turbo` | ~3GB | Fast | High | Good balance of speed and accuracy |
+| `mlx-community/whisper-large-v3` | ~3GB | Slower | **Highest** | Māori, quiet audio, heavy accents |
 
-Models are downloaded on first use (~750MB–1.5GB) and cached in `~/.cache/huggingface/`.
+Models are downloaded on first use and cached in `~/.cache/huggingface/`.
+
+## Model selection strategy
+
+Before transcribing, check total system memory to pick the right model:
+
+```bash
+sysctl -n hw.memsize | awk '{print int($1/1073741824)"GB"}'
+```
+
+| Machine RAM | Default model | Notes |
+|-------------|---------------|-------|
+| ≤16GB | `distil-whisper-large-v3` | Larger models cause OOM crashes |
+| 24GB+ | `whisper-large-v3-turbo` | Safe to use heavier models |
+
+Override to `whisper-large-v3` (full, non-turbo) when highest accuracy is needed **and** RAM is 24GB+ — e.g. te reo Māori, noisy audio, heavy accents.
 
 ## Tips
 
 - **Long files**: no splitting needed — mlx-whisper handles them natively via sliding window
 - **te reo Māori**: use both `--language mi` and `--initial-prompt` with key terms for best results. Māori accuracy is imperfect — review transcripts
-- **Noisy audio**: try `whisper-large-v3` (without turbo) for better handling
+- **Noisy audio**: on 24GB+ machines, use `whisper-large-v3` for best results; otherwise distil handles most cases
 - **Capture to file**: `python3 transcribe.py audio.mp3 > transcript.txt`
 - **Progress**: mlx-whisper prints segment-by-segment progress to stderr
 
