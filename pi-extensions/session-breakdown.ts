@@ -33,11 +33,39 @@ import { createReadStream, type Dirent } from "node:fs";
 import readline from "node:readline";
 
 type ModelKey = string; // `${provider}/${model}`
+type CwdKey = string; // normalized cwd path
+type DowKey = string; // "Mon", "Tue", etc.
+type TodKey = string; // "after-midnight", "morning", "afternoon", "evening", "night"
+type BreakdownView = "model" | "cwd" | "dow" | "tod";
+
+const DOW_NAMES: DowKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+const TOD_BUCKETS: { key: TodKey; label: string; from: number; to: number }[] = [
+	{ key: "after-midnight", label: "After midnight (0–5)", from: 0, to: 5 },
+	{ key: "morning", label: "Morning (6–11)", from: 6, to: 11 },
+	{ key: "afternoon", label: "Afternoon (12–16)", from: 12, to: 16 },
+	{ key: "evening", label: "Evening (17–21)", from: 17, to: 21 },
+	{ key: "night", label: "Night (22–23)", from: 22, to: 23 },
+];
+
+function todBucketForHour(hour: number): TodKey {
+	for (const b of TOD_BUCKETS) {
+		if (hour >= b.from && hour <= b.to) return b.key;
+	}
+	return "after-midnight";
+}
+
+function todBucketLabel(key: TodKey): string {
+	return TOD_BUCKETS.find((b) => b.key === key)?.label ?? key;
+}
 
 interface ParsedSession {
 	filePath: string;
 	startedAt: Date;
 	dayKeyLocal: string; // YYYY-MM-DD (local)
+	cwd: CwdKey | null;
+	dow: DowKey;
+	tod: TodKey;
 	modelsUsed: Set<ModelKey>;
 	messages: number;
 	tokens: number;
@@ -58,6 +86,14 @@ interface DayAgg {
 	sessionsByModel: Map<ModelKey, number>;
 	messagesByModel: Map<ModelKey, number>;
 	tokensByModel: Map<ModelKey, number>;
+	sessionsByCwd: Map<CwdKey, number>;
+	messagesByCwd: Map<CwdKey, number>;
+	tokensByCwd: Map<CwdKey, number>;
+	costByCwd: Map<CwdKey, number>;
+	sessionsByTod: Map<TodKey, number>;
+	messagesByTod: Map<TodKey, number>;
+	tokensByTod: Map<TodKey, number>;
+	costByTod: Map<TodKey, number>;
 }
 
 interface RangeAgg {
@@ -71,6 +107,18 @@ interface RangeAgg {
 	modelSessions: Map<ModelKey, number>; // number of sessions where model was used
 	modelMessages: Map<ModelKey, number>;
 	modelTokens: Map<ModelKey, number>;
+	cwdCost: Map<CwdKey, number>;
+	cwdSessions: Map<CwdKey, number>;
+	cwdMessages: Map<CwdKey, number>;
+	cwdTokens: Map<CwdKey, number>;
+	dowCost: Map<DowKey, number>;
+	dowSessions: Map<DowKey, number>;
+	dowMessages: Map<DowKey, number>;
+	dowTokens: Map<DowKey, number>;
+	todCost: Map<TodKey, number>;
+	todSessions: Map<TodKey, number>;
+	todMessages: Map<TodKey, number>;
+	todTokens: Map<TodKey, number>;
 }
 
 interface RGB {
@@ -86,6 +134,19 @@ interface BreakdownData {
 		modelColors: Map<ModelKey, RGB>;
 		otherColor: RGB;
 		orderedModels: ModelKey[];
+	};
+	cwdPalette: {
+		cwdColors: Map<CwdKey, RGB>;
+		otherColor: RGB;
+		orderedCwds: CwdKey[];
+	};
+	dowPalette: {
+		dowColors: Map<DowKey, RGB>;
+		orderedDows: DowKey[];
+	};
+	todPalette: {
+		todColors: Map<TodKey, RGB>;
+		orderedTods: TodKey[];
 	};
 }
 
@@ -187,6 +248,36 @@ function formatUsd(cost: number): string {
 	if (cost >= 1) return `$${cost.toFixed(2)}`;
 	if (cost >= 0.1) return `$${cost.toFixed(3)}`;
 	return `$${cost.toFixed(4)}`;
+}
+
+/**
+ * Abbreviate a path for display. Strategy:
+ * - Replace home dir with ~
+ * - If still too long, keep first segment + last N segments with … in between
+ * Examples:
+ *   /Users/mitsuhiko/Development/agent-stuff  →  ~/Development/agent-stuff
+ *   /Users/mitsuhiko/Development/minijinja/minijinja-go  →  ~/…/minijinja/minijinja-go
+ */
+function abbreviatePath(p: string, maxWidth = 40): string {
+	const home = os.homedir();
+	let display = p;
+	if (display.startsWith(home)) {
+		display = "~" + display.slice(home.length);
+	}
+	if (display.length <= maxWidth) return display;
+
+	const parts = display.split("/").filter(Boolean);
+	// Always keep the first part (~ or root indicator) and try to keep as many trailing parts as possible
+	if (parts.length <= 2) return display;
+
+	const prefix = parts[0]; // typically "~"
+	// Try keeping last N parts, increasing until it fits
+	for (let keep = parts.length - 1; keep >= 1; keep--) {
+		const tail = parts.slice(parts.length - keep);
+		const candidate = prefix + "/…/" + tail.join("/");
+		if (candidate.length <= maxWidth || keep === 1) return candidate;
+	}
+	return display;
 }
 
 function padRight(s: string, n: number): string {
@@ -383,6 +474,7 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 	const fileName = path.basename(filePath);
 	let startedAt = parseSessionStartFromFilename(fileName);
 	let currentModel: ModelKey | null = null;
+	let cwd: CwdKey | null = null;
 
 	const modelsUsed = new Set<ModelKey>();
 	let messages = 0;
@@ -410,9 +502,14 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 				continue;
 			}
 
-			if (!startedAt && obj?.type === "session" && typeof obj?.timestamp === "string") {
-				const d = new Date(obj.timestamp);
-				if (Number.isFinite(d.getTime())) startedAt = d;
+			if (obj?.type === "session") {
+				if (!startedAt && typeof obj?.timestamp === "string") {
+					const d = new Date(obj.timestamp);
+					if (Number.isFinite(d.getTime())) startedAt = d;
+				}
+				if (typeof obj?.cwd === "string" && obj.cwd.trim()) {
+					cwd = obj.cwd.trim();
+				}
 				continue;
 			}
 
@@ -457,10 +554,15 @@ async function parseSessionFile(filePath: string, signal?: AbortSignal): Promise
 
 	if (!startedAt) return null;
 	const dayKeyLocal = toLocalDayKey(startedAt);
+	const dow = DOW_NAMES[mondayIndex(startedAt)];
+	const tod = todBucketForHour(startedAt.getHours());
 	return {
 		filePath,
 		startedAt,
 		dayKeyLocal,
+		cwd,
+		dow,
+		tod,
 		modelsUsed,
 		messages,
 		tokens,
@@ -491,6 +593,14 @@ function buildRangeAgg(days: number, now: Date): RangeAgg {
 			sessionsByModel: new Map(),
 			messagesByModel: new Map(),
 			tokensByModel: new Map(),
+			sessionsByCwd: new Map(),
+			messagesByCwd: new Map(),
+			tokensByCwd: new Map(),
+			costByCwd: new Map(),
+			sessionsByTod: new Map(),
+			messagesByTod: new Map(),
+			tokensByTod: new Map(),
+			costByTod: new Map(),
 		};
 		outDays.push(day);
 		dayByKey.set(dayKeyLocal, day);
@@ -507,6 +617,18 @@ function buildRangeAgg(days: number, now: Date): RangeAgg {
 		modelSessions: new Map(),
 		modelMessages: new Map(),
 		modelTokens: new Map(),
+		cwdCost: new Map(),
+		cwdSessions: new Map(),
+		cwdMessages: new Map(),
+		cwdTokens: new Map(),
+		dowCost: new Map(),
+		dowSessions: new Map(),
+		dowMessages: new Map(),
+		dowTokens: new Map(),
+		todCost: new Map(),
+		todSessions: new Map(),
+		todMessages: new Map(),
+		todTokens: new Map(),
 	};
 }
 
@@ -546,6 +668,37 @@ function addSessionToRange(range: RangeAgg, session: ParsedSession): void {
 		day.costByModel.set(mk, (day.costByModel.get(mk) ?? 0) + cost);
 		range.modelCost.set(mk, (range.modelCost.get(mk) ?? 0) + cost);
 	}
+
+	// CWD aggregation
+	const cwd = session.cwd;
+	if (cwd) {
+		day.sessionsByCwd.set(cwd, (day.sessionsByCwd.get(cwd) ?? 0) + 1);
+		range.cwdSessions.set(cwd, (range.cwdSessions.get(cwd) ?? 0) + 1);
+		day.messagesByCwd.set(cwd, (day.messagesByCwd.get(cwd) ?? 0) + session.messages);
+		range.cwdMessages.set(cwd, (range.cwdMessages.get(cwd) ?? 0) + session.messages);
+		day.tokensByCwd.set(cwd, (day.tokensByCwd.get(cwd) ?? 0) + session.tokens);
+		range.cwdTokens.set(cwd, (range.cwdTokens.get(cwd) ?? 0) + session.tokens);
+		day.costByCwd.set(cwd, (day.costByCwd.get(cwd) ?? 0) + session.totalCost);
+		range.cwdCost.set(cwd, (range.cwdCost.get(cwd) ?? 0) + session.totalCost);
+	}
+
+	// Day-of-week aggregation
+	const dow = session.dow;
+	range.dowSessions.set(dow, (range.dowSessions.get(dow) ?? 0) + 1);
+	range.dowMessages.set(dow, (range.dowMessages.get(dow) ?? 0) + session.messages);
+	range.dowTokens.set(dow, (range.dowTokens.get(dow) ?? 0) + session.tokens);
+	range.dowCost.set(dow, (range.dowCost.get(dow) ?? 0) + session.totalCost);
+
+	// Time-of-day aggregation
+	const tod = session.tod;
+	day.sessionsByTod.set(tod, (day.sessionsByTod.get(tod) ?? 0) + 1);
+	day.messagesByTod.set(tod, (day.messagesByTod.get(tod) ?? 0) + session.messages);
+	day.tokensByTod.set(tod, (day.tokensByTod.get(tod) ?? 0) + session.tokens);
+	day.costByTod.set(tod, (day.costByTod.get(tod) ?? 0) + session.totalCost);
+	range.todSessions.set(tod, (range.todSessions.get(tod) ?? 0) + 1);
+	range.todMessages.set(tod, (range.todMessages.get(tod) ?? 0) + session.messages);
+	range.todTokens.set(tod, (range.todTokens.get(tod) ?? 0) + session.tokens);
+	range.todCost.set(tod, (range.todCost.get(tod) ?? 0) + session.totalCost);
 }
 
 function sortMapByValueDesc<K extends string>(m: Map<K, number>): Array<{ key: K; value: number }> {
@@ -583,26 +736,117 @@ function choosePaletteFromLast30Days(range30: RangeAgg, topN = 4): {
 	};
 }
 
+function chooseCwdPaletteFromLast30Days(range30: RangeAgg, topN = 4): {
+	cwdColors: Map<CwdKey, RGB>;
+	otherColor: RGB;
+	orderedCwds: CwdKey[];
+} {
+	const costSum = [...range30.cwdCost.values()].reduce((a, b) => a + b, 0);
+	const popularity =
+		costSum > 0
+			? range30.cwdCost
+			: range30.totalTokens > 0
+				? range30.cwdTokens
+				: range30.totalMessages > 0
+					? range30.cwdMessages
+					: range30.cwdSessions;
+
+	const sorted = sortMapByValueDesc(popularity);
+	const orderedCwds = sorted.slice(0, topN).map((x) => x.key);
+	const cwdColors = new Map<CwdKey, RGB>();
+	for (let i = 0; i < orderedCwds.length; i++) {
+		cwdColors.set(orderedCwds[i], PALETTE[i % PALETTE.length]);
+	}
+	return {
+		cwdColors,
+		otherColor: { r: 160, g: 160, b: 160 },
+		orderedCwds,
+	};
+}
+
+// Fixed palette for day-of-week: weekdays get cool tones, weekend gets warm
+const DOW_PALETTE: RGB[] = [
+	{ r: 47, g: 129, b: 247 },  // Mon – blue
+	{ r: 64, g: 196, b: 99 },   // Tue – green
+	{ r: 163, g: 113, b: 247 }, // Wed – purple
+	{ r: 47, g: 175, b: 200 },  // Thu – teal
+	{ r: 100, g: 200, b: 150 }, // Fri – mint
+	{ r: 255, g: 159, b: 10 },  // Sat – orange
+	{ r: 244, g: 67, b: 54 },   // Sun – red
+];
+
+function buildDowPalette(): { dowColors: Map<DowKey, RGB>; orderedDows: DowKey[] } {
+	const dowColors = new Map<DowKey, RGB>();
+	for (let i = 0; i < DOW_NAMES.length; i++) {
+		dowColors.set(DOW_NAMES[i], DOW_PALETTE[i]);
+	}
+	return { dowColors, orderedDows: [...DOW_NAMES] };
+}
+
+// Fixed palette for time-of-day buckets
+const TOD_PALETTE: Map<TodKey, RGB> = new Map([
+	["after-midnight", { r: 100, g: 60, b: 180 }],  // deep purple
+	["morning", { r: 255, g: 200, b: 50 }],          // golden yellow
+	["afternoon", { r: 64, g: 196, b: 99 }],         // green
+	["evening", { r: 47, g: 129, b: 247 }],           // blue
+	["night", { r: 60, g: 40, b: 140 }],              // dark indigo
+]);
+
+function buildTodPalette(): { todColors: Map<TodKey, RGB>; orderedTods: TodKey[] } {
+	const todColors = new Map<TodKey, RGB>();
+	const orderedTods: TodKey[] = [];
+	for (const b of TOD_BUCKETS) {
+		const c = TOD_PALETTE.get(b.key);
+		if (c) todColors.set(b.key, c);
+		orderedTods.push(b.key);
+	}
+	return { todColors, orderedTods };
+}
+
 function dayMixedColor(
 	day: DayAgg,
-	modelColors: Map<ModelKey, RGB>,
+	colorMap: Map<string, RGB>,
 	otherColor: RGB,
 	mode: MeasurementMode,
+	view: BreakdownView = "model",
 ): RGB {
 	const parts: Array<{ color: RGB; weight: number }> = [];
 	let otherWeight = 0;
 
-	let map: Map<ModelKey, number>;
-	if (mode === "tokens") {
-		map = day.tokens > 0 ? day.tokensByModel : day.messages > 0 ? day.messagesByModel : day.sessionsByModel;
-	} else if (mode === "messages") {
-		map = day.messages > 0 ? day.messagesByModel : day.sessionsByModel;
+	let map: Map<string, number>;
+	if (view === "dow") {
+		// For dow, each day IS a single dow – use the dow color directly
+		const dowKey = DOW_NAMES[mondayIndex(day.date)];
+		const c = colorMap.get(dowKey);
+		return c ?? otherColor;
+	} else if (view === "tod") {
+		if (mode === "tokens") {
+			map = day.tokens > 0 ? day.tokensByTod : day.messages > 0 ? day.messagesByTod : day.sessionsByTod;
+		} else if (mode === "messages") {
+			map = day.messages > 0 ? day.messagesByTod : day.sessionsByTod;
+		} else {
+			map = day.sessionsByTod;
+		}
+	} else if (view === "cwd") {
+		if (mode === "tokens") {
+			map = day.tokens > 0 ? day.tokensByCwd : day.messages > 0 ? day.messagesByCwd : day.sessionsByCwd;
+		} else if (mode === "messages") {
+			map = day.messages > 0 ? day.messagesByCwd : day.sessionsByCwd;
+		} else {
+			map = day.sessionsByCwd;
+		}
 	} else {
-		map = day.sessionsByModel;
+		if (mode === "tokens") {
+			map = day.tokens > 0 ? day.tokensByModel : day.messages > 0 ? day.messagesByModel : day.sessionsByModel;
+		} else if (mode === "messages") {
+			map = day.messages > 0 ? day.messagesByModel : day.sessionsByModel;
+		} else {
+			map = day.sessionsByModel;
+		}
 	}
 
 	for (const [mk, w] of map.entries()) {
-		const c = modelColors.get(mk);
+		const c = colorMap.get(mk);
 		if (c) parts.push({ color: c, weight: w });
 		else otherWeight += w;
 	}
@@ -644,10 +888,11 @@ function weeksForRange(range: RangeAgg): number {
 
 function renderGraphLines(
 	range: RangeAgg,
-	modelColors: Map<ModelKey, RGB>,
+	colorMap: Map<string, RGB>,
 	otherColor: RGB,
 	mode: MeasurementMode,
 	options?: { cellWidth?: number; gap?: number },
+	view: BreakdownView = "model",
 ): string[] {
 	const days = range.days;
 	const start = days[0].date;
@@ -701,7 +946,7 @@ function renderGraphLines(
 				continue;
 			}
 
-			const hue = dayMixedColor(day, modelColors, otherColor, mode);
+			const hue = dayMixedColor(day, colorMap, otherColor, mode, view);
 			let t = denom > 0 ? Math.log1p(value) / denom : 0;
 			t = clamp01(t);
 			const minVisible = 0.2;
@@ -812,6 +1057,129 @@ function renderModelTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): 
 	return lines;
 }
 
+function renderCwdTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): string[] {
+	const metric = graphMetricForRange(range, mode);
+	const kind = metric.kind;
+
+	let perCwd: Map<CwdKey, number>;
+	let total = 0;
+	let label = kind;
+
+	if (kind === "tokens") {
+		perCwd = range.cwdTokens;
+		total = range.totalTokens;
+	} else if (kind === "messages") {
+		perCwd = range.cwdMessages;
+		total = range.totalMessages;
+	} else {
+		perCwd = range.cwdSessions;
+		total = range.sessions;
+	}
+
+	const sorted = sortMapByValueDesc(perCwd);
+	const rows = sorted.slice(0, maxRows);
+
+	const valueWidth = kind === "tokens" ? 10 : 8;
+	const displayPaths = rows.map((r) => abbreviatePath(r.key, 40));
+	const cwdWidth = Math.min(42, Math.max("directory".length, ...displayPaths.map((p) => p.length)));
+
+	const lines: string[] = [];
+	lines.push(`${padRight("directory", cwdWidth)}  ${padLeft(label, valueWidth)}  ${padLeft("cost", 10)}  ${padLeft("share", 6)}`);
+	lines.push(`${"-".repeat(cwdWidth)}  ${"-".repeat(valueWidth)}  ${"-".repeat(10)}  ${"-".repeat(6)}`);
+
+	for (let i = 0; i < rows.length; i++) {
+		const r = rows[i];
+		const value = perCwd.get(r.key) ?? 0;
+		const cost = range.cwdCost.get(r.key) ?? 0;
+		const share = total > 0 ? `${Math.round((value / total) * 100)}%` : "0%";
+		lines.push(
+			`${padRight(displayPaths[i].slice(0, cwdWidth), cwdWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
+		);
+	}
+
+	if (sorted.length === 0) {
+		lines.push(dim("(no directory data found)"));
+	}
+
+	return lines;
+}
+
+function renderDowTable(range: RangeAgg, mode: MeasurementMode): string[] {
+	const metric = graphMetricForRange(range, mode);
+	const kind = metric.kind;
+
+	let perDow: Map<DowKey, number>;
+	let total = 0;
+
+	if (kind === "tokens") {
+		perDow = range.dowTokens;
+		total = range.totalTokens;
+	} else if (kind === "messages") {
+		perDow = range.dowMessages;
+		total = range.totalMessages;
+	} else {
+		perDow = range.dowSessions;
+		total = range.sessions;
+	}
+
+	const valueWidth = kind === "tokens" ? 10 : 8;
+	const dowWidth = 5; // "day  "
+
+	const lines: string[] = [];
+	lines.push(`${padRight("day", dowWidth)}  ${padLeft(kind, valueWidth)}  ${padLeft("cost", 10)}  ${padLeft("share", 6)}`);
+	lines.push(`${"-".repeat(dowWidth)}  ${"-".repeat(valueWidth)}  ${"-".repeat(10)}  ${"-".repeat(6)}`);
+
+	// Always show in Mon–Sun order
+	for (const dow of DOW_NAMES) {
+		const value = perDow.get(dow) ?? 0;
+		const cost = range.dowCost.get(dow) ?? 0;
+		const share = total > 0 ? `${Math.round((value / total) * 100)}%` : "0%";
+		lines.push(
+			`${padRight(dow, dowWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
+		);
+	}
+
+	return lines;
+}
+
+function renderTodTable(range: RangeAgg, mode: MeasurementMode): string[] {
+	const metric = graphMetricForRange(range, mode);
+	const kind = metric.kind;
+
+	let perTod: Map<TodKey, number>;
+	let total = 0;
+
+	if (kind === "tokens") {
+		perTod = range.todTokens;
+		total = range.totalTokens;
+	} else if (kind === "messages") {
+		perTod = range.todMessages;
+		total = range.totalMessages;
+	} else {
+		perTod = range.todSessions;
+		total = range.sessions;
+	}
+
+	const valueWidth = kind === "tokens" ? 10 : 8;
+	const todWidth = 22; // widest label
+
+	const lines: string[] = [];
+	lines.push(`${padRight("time of day", todWidth)}  ${padLeft(kind, valueWidth)}  ${padLeft("cost", 10)}  ${padLeft("share", 6)}`);
+	lines.push(`${"-".repeat(todWidth)}  ${"-".repeat(valueWidth)}  ${"-".repeat(10)}  ${"-".repeat(6)}`);
+
+	// Always show in chronological order
+	for (const b of TOD_BUCKETS) {
+		const value = perTod.get(b.key) ?? 0;
+		const cost = range.todCost.get(b.key) ?? 0;
+		const share = total > 0 ? `${Math.round((value / total) * 100)}%` : "0%";
+		lines.push(
+			`${padRight(b.label, todWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
+		);
+	}
+
+	return lines;
+}
+
 function renderLeftRight(left: string, right: string, width: number): string {
 	const leftW = visibleWidth(left);
 	if (width <= 0) return "";
@@ -888,7 +1256,10 @@ async function computeBreakdown(
 	onProgress?.({ phase: "finalize", currentFile: undefined });
 
 	const palette = choosePaletteFromLast30Days(ranges.get(30)!, 4);
-	return { generatedAt: now, ranges, palette };
+	const cwdPalette = chooseCwdPaletteFromLast30Days(ranges.get(30)!, 4);
+	const dowPalette = buildDowPalette();
+	const todPalette = buildTodPalette();
+	return { generatedAt: now, ranges, palette, cwdPalette, dowPalette, todPalette };
 }
 
 class BreakdownComponent implements Component {
@@ -897,6 +1268,7 @@ class BreakdownComponent implements Component {
 	private onDone: () => void;
 	private rangeIndex = 1; // default 30d
 	private measurement: MeasurementMode = "sessions";
+	private view: BreakdownView = "model";
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
@@ -941,6 +1313,16 @@ class BreakdownComponent implements Component {
 		if (matchesKey(data, Key.left) || data.toLowerCase() === "h") prev();
 		if (matchesKey(data, Key.right) || data.toLowerCase() === "l") next();
 
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || data.toLowerCase() === "j" || data.toLowerCase() === "k") {
+			const views: BreakdownView[] = ["model", "cwd", "dow", "tod"];
+			const idx = views.indexOf(this.view);
+			const dir = matchesKey(data, Key.up) || data.toLowerCase() === "k" ? -1 : 1;
+			this.view = views[(idx + views.length + dir) % views.length] ?? "model";
+			this.invalidate();
+			this.tui.requestRender();
+			return;
+		}
+
 		if (data === "1") {
 			this.rangeIndex = 0;
 			this.invalidate();
@@ -976,15 +1358,50 @@ class BreakdownComponent implements Component {
 			return selected ? bold(`[${label}]`) : dim(` ${label} `);
 		};
 
-		const header =
-			`${bold("Session breakdown")}  ${tab(7, 0)} ${tab(30, 1)} ${tab(90, 2)}  ` +
-			`${metricTab("sessions", "sess")} ${metricTab("messages", "msg")} ${metricTab("tokens", "tok")}`;
+		const viewTab = (v: BreakdownView, label: string): string => {
+			const selected = v === this.view;
+			return selected ? bold(`[${label}]`) : dim(` ${label} `);
+		};
 
-		const legendItems = renderLegendItems(
-			this.data.palette.modelColors,
-			this.data.palette.orderedModels,
-			this.data.palette.otherColor,
-		);
+		const header =
+			`${bold("Session breakdown")}  ${tab(7, 0)}${tab(30, 1)}${tab(90, 2)}  ` +
+			`${metricTab("sessions", "sess")}${metricTab("messages", "msg")}${metricTab("tokens", "tok")}  ` +
+			`${viewTab("model", "model")}${viewTab("cwd", "cwd")}${viewTab("dow", "dow")}${viewTab("tod", "tod")}`;
+
+		// Choose colors and legend based on current view
+		let activeColorMap: Map<string, RGB>;
+		let activeOtherColor: RGB = { r: 160, g: 160, b: 160 };
+		const legendItems: string[] = [];
+
+		if (this.view === "model") {
+			activeColorMap = this.data.palette.modelColors;
+			activeOtherColor = this.data.palette.otherColor;
+			for (const mk of this.data.palette.orderedModels) {
+				const c = activeColorMap.get(mk);
+				if (c) legendItems.push(`${ansiFg(c, "█")} ${displayModelName(mk)}`);
+			}
+			legendItems.push(`${ansiFg(activeOtherColor, "█")} other`);
+		} else if (this.view === "cwd") {
+			activeColorMap = this.data.cwdPalette.cwdColors;
+			activeOtherColor = this.data.cwdPalette.otherColor;
+			for (const cwd of this.data.cwdPalette.orderedCwds) {
+				const c = activeColorMap.get(cwd);
+				if (c) legendItems.push(`${ansiFg(c, "█")} ${abbreviatePath(cwd, 30)}`);
+			}
+			legendItems.push(`${ansiFg(activeOtherColor, "█")} other`);
+		} else if (this.view === "dow") {
+			activeColorMap = this.data.dowPalette.dowColors;
+			for (const dow of this.data.dowPalette.orderedDows) {
+				const c = activeColorMap.get(dow);
+				if (c) legendItems.push(`${ansiFg(c, "█")} ${dow}`);
+			}
+		} else {
+			activeColorMap = this.data.todPalette.todColors;
+			for (const tod of this.data.todPalette.orderedTods) {
+				const c = activeColorMap.get(tod);
+				if (c) legendItems.push(`${ansiFg(c, "█")} ${todBucketLabel(tod)}`);
+			}
+		}
 
 		const summary = rangeSummary(range, selectedDays, metric.kind) + dim(`   (graph: ${metric.kind}/day)`);
 
@@ -999,16 +1416,21 @@ class BreakdownComponent implements Component {
 
 		const graphLines = renderGraphLines(
 			range,
-			this.data.palette.modelColors,
-			this.data.palette.otherColor,
+			activeColorMap,
+			activeOtherColor,
 			this.measurement,
 			{ cellWidth, gap },
+			this.view,
 		);
-		const tableLines = renderModelTable(range, metric.kind, 8);
+		const tableLines =
+			this.view === "model" ? renderModelTable(range, metric.kind, 8)
+			: this.view === "cwd" ? renderCwdTable(range, metric.kind, 8)
+			: this.view === "dow" ? renderDowTable(range, metric.kind)
+			: renderTodTable(range, metric.kind);
 
 		const lines: string[] = [];
 		lines.push(truncateToWidth(header, width));
-		lines.push(truncateToWidth(dim("←/→ range · tab metric · q to close"), width));
+		lines.push(truncateToWidth(dim("←/→ range · ↑/↓ view · tab metric · q to close"), width));
 		lines.push("");
 		lines.push(truncateToWidth(summary, width));
 		lines.push("");
@@ -1021,7 +1443,12 @@ class BreakdownComponent implements Component {
 
 		if (showSideLegend) {
 			const legendBlock: string[] = [];
-			legendBlock.push(dim("Top models (30d palette):"));
+			const legendTitle =
+				this.view === "model" ? "Top models (30d palette):"
+				: this.view === "cwd" ? "Top directories (30d palette):"
+				: this.view === "dow" ? "Day of week:"
+				: "Time of day:";
+			legendBlock.push(dim(legendTitle));
 			legendBlock.push(...legendItems);
 			// Fit into 7 rows (same as graph). If too many, show a final "+N more" line.
 			const maxLegendRows = graphLines.length;
@@ -1047,7 +1474,12 @@ class BreakdownComponent implements Component {
 			for (const gl of graphLines) lines.push(truncateToWidth(gl, width));
 			lines.push("");
 			// Compact legend below, left-aligned.
-			lines.push(truncateToWidth(dim("Top models (30d palette):"), width));
+			const legendTitleBelow =
+				this.view === "model" ? "Top models (30d palette):"
+				: this.view === "cwd" ? "Top directories (30d palette):"
+				: this.view === "dow" ? "Day of week:"
+				: "Time of day:";
+			lines.push(truncateToWidth(dim(legendTitleBelow), width));
 			for (const it of legendItems) lines.push(truncateToWidth(it, width));
 		}
 
