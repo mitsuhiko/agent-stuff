@@ -159,7 +159,7 @@ function findPiExecutable() {
 	return first || undefined;
 }
 
-function collectModuleCandidates() {
+function collectModuleCandidates(fileName = "index.js", envVarName = "PI_AI_MODULE_PATH") {
 	const candidates = new Set();
 
 	const add = (p) => {
@@ -168,16 +168,16 @@ function collectModuleCandidates() {
 		candidates.add(abs);
 	};
 
-	if (process.env.PI_AI_MODULE_PATH) add(process.env.PI_AI_MODULE_PATH);
+	if (envVarName && process.env[envVarName]) add(process.env[envVarName]);
 
 	const cwd = process.cwd();
 	const scriptDir = dirname(fileURLToPath(import.meta.url));
 	for (const start of [cwd, scriptDir]) {
 		let dir = start;
 		for (let i = 0; i < 8; i++) {
-			add(join(dir, "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
-			add(join(dir, "packages", "ai", "dist", "index.js"));
-			add(join(dir, "ai", "dist", "index.js"));
+			add(join(dir, "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(dir, "packages", "ai", "dist", fileName));
+			add(join(dir, "ai", "dist", fileName));
 			const parent = dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
@@ -189,16 +189,16 @@ function collectModuleCandidates() {
 		try {
 			const piReal = realpathSync(piExec);
 			const piDir = dirname(piReal);
-			add(join(piDir, "..", "..", "ai", "dist", "index.js"));
-			add(join(piDir, "..", "..", "pi-ai", "dist", "index.js"));
-			add(join(piDir, "..", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
-			add(join(piDir, "..", "..", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"));
+			add(join(piDir, "..", "..", "ai", "dist", fileName));
+			add(join(piDir, "..", "..", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
 		} catch {
 			// ignore
 		}
 	}
 
-	add(join(homedir(), "Development", "pi-mono", "packages", "ai", "dist", "index.js"));
+	add(join(homedir(), "Development", "pi-mono", "packages", "ai", "dist", fileName));
 
 	return Array.from(candidates);
 }
@@ -212,7 +212,7 @@ async function loadPiAi() {
 		tried.push(`@mariozechner/pi-ai (${err?.code || err?.message || "not found"})`);
 	}
 
-	for (const candidate of collectModuleCandidates()) {
+	for (const candidate of collectModuleCandidates("index.js", "PI_AI_MODULE_PATH")) {
 		if (!existsSync(candidate)) continue;
 		try {
 			return await import(pathToFileURL(candidate).href);
@@ -224,6 +224,81 @@ async function loadPiAi() {
 	throw new Error(
 		`Could not load @mariozechner/pi-ai. Set PI_AI_MODULE_PATH to its dist/index.js.\nTried:\n- ${tried.join("\n- ")}`,
 	);
+}
+
+async function loadPiAiOAuth(piAi) {
+	if (typeof piAi?.getOAuthApiKey === "function") {
+		return { getOAuthApiKey: piAi.getOAuthApiKey.bind(piAi) };
+	}
+
+	const tried = [];
+
+	try {
+		const oauth = await import("@mariozechner/pi-ai/oauth");
+		if (typeof oauth.getOAuthApiKey === "function") {
+			return { getOAuthApiKey: oauth.getOAuthApiKey.bind(oauth) };
+		}
+		tried.push("@mariozechner/pi-ai/oauth (missing getOAuthApiKey export)");
+	} catch (err) {
+		tried.push(`@mariozechner/pi-ai/oauth (${err?.code || err?.message || "not found"})`);
+	}
+
+	for (const candidate of collectModuleCandidates("oauth.js", "PI_AI_OAUTH_MODULE_PATH")) {
+		if (!existsSync(candidate)) continue;
+		try {
+			const oauth = await import(pathToFileURL(candidate).href);
+			if (typeof oauth.getOAuthApiKey === "function") {
+				return { getOAuthApiKey: oauth.getOAuthApiKey.bind(oauth) };
+			}
+			tried.push(`${candidate} (missing getOAuthApiKey export)`);
+		} catch (err) {
+			tried.push(`${candidate} (${err?.code || err?.message || "failed"})`);
+		}
+	}
+
+	return {
+		getOAuthApiKey: undefined,
+		error: `Could not load getOAuthApiKey. Set PI_AI_OAUTH_MODULE_PATH to pi-ai dist/oauth.js.\nTried:\n- ${tried.join("\n- ")}`,
+	};
+}
+
+function parseExpiryTimestamp(expires) {
+	if (typeof expires === "number" && Number.isFinite(expires)) {
+		if (expires <= 0) return undefined;
+		return expires < 1_000_000_000_000 ? expires * 1000 : expires;
+	}
+
+	if (typeof expires === "string") {
+		const trimmed = expires.trim();
+		if (!trimmed) return undefined;
+
+		const numeric = Number(trimmed);
+		if (Number.isFinite(numeric)) {
+			return parseExpiryTimestamp(numeric);
+		}
+
+		const parsed = Date.parse(trimmed);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+
+	return undefined;
+}
+
+function getCachedOAuthAccess(entry, now = Date.now()) {
+	if (!entry || typeof entry !== "object") return undefined;
+
+	const apiKey = resolveConfigValue(entry.access);
+	if (!apiKey) return undefined;
+
+	const expiresAt = parseExpiryTimestamp(entry.expires);
+	if (!expiresAt) return undefined;
+
+	if (now + 30_000 >= expiresAt) return undefined;
+
+	return {
+		apiKey,
+		accountId: entry.accountId,
+	};
 }
 
 function pickFastModel(provider, requestedModel, piAi) {
@@ -272,8 +347,12 @@ async function resolveApiKey(provider, auth, authPath, piAi) {
 		throw new Error(`Unsupported credential type for ${provider}: ${String(entry.type || "unknown")}`);
 	}
 
-	if (typeof piAi.getOAuthApiKey !== "function") {
-		throw new Error("Loaded pi-ai module does not export getOAuthApiKey");
+	const fallbackToken = getCachedOAuthAccess(entry);
+	const oauth = await loadPiAiOAuth(piAi);
+
+	if (typeof oauth.getOAuthApiKey !== "function") {
+		if (fallbackToken) return fallbackToken;
+		throw new Error(oauth.error || "Loaded pi-ai module does not export getOAuthApiKey");
 	}
 
 	const oauthCreds = {};
@@ -283,8 +362,16 @@ async function resolveApiKey(provider, auth, authPath, piAi) {
 		}
 	}
 
-	const refreshed = await piAi.getOAuthApiKey(provider, oauthCreds);
-	if (!refreshed) {
+	let refreshed;
+	try {
+		refreshed = await oauth.getOAuthApiKey(provider, oauthCreds);
+	} catch (err) {
+		if (fallbackToken) return fallbackToken;
+		throw err;
+	}
+
+	if (!refreshed?.apiKey) {
+		if (fallbackToken) return fallbackToken;
 		throw new Error(`No OAuth credentials available for provider '${provider}'`);
 	}
 
