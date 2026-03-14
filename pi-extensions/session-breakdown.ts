@@ -264,7 +264,7 @@ function abbreviatePath(p: string, maxWidth = 40): string {
 	if (display.startsWith(home)) {
 		display = "~" + display.slice(home.length);
 	}
-	if (display.length <= maxWidth) return display;
+	if (visibleWidth(display) <= maxWidth) return display;
 
 	const parts = display.split("/").filter(Boolean);
 	// Always keep the first part (~ or root indicator) and try to keep as many trailing parts as possible
@@ -275,18 +275,20 @@ function abbreviatePath(p: string, maxWidth = 40): string {
 	for (let keep = parts.length - 1; keep >= 1; keep--) {
 		const tail = parts.slice(parts.length - keep);
 		const candidate = prefix + "/…/" + tail.join("/");
-		if (candidate.length <= maxWidth || keep === 1) return candidate;
+		if (visibleWidth(candidate) <= maxWidth || keep === 1) return candidate;
 	}
 	return display;
 }
 
 function padRight(s: string, n: number): string {
-	const delta = n - s.length;
+	const width = visibleWidth(s);
+	const delta = n - width;
 	return delta > 0 ? s + " ".repeat(delta) : s;
 }
 
 function padLeft(s: string, n: number): string {
-	const delta = n - s.length;
+	const width = visibleWidth(s);
+	const delta = n - width;
 	return delta > 0 ? " ".repeat(delta) + s : s;
 }
 
@@ -1035,7 +1037,7 @@ function renderModelTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): 
 	const rows = sorted.slice(0, maxRows);
 
 	const valueWidth = kind === "tokens" ? 10 : 8;
-	const modelWidth = Math.min(52, Math.max("model".length, ...rows.map((r) => r.key.length)));
+	const modelWidth = Math.min(52, Math.max(visibleWidth("model"), ...rows.map((r) => visibleWidth(r.key))));
 
 	const lines: string[] = [];
 	lines.push(`${padRight("model", modelWidth)}  ${padLeft(label, valueWidth)}  ${padLeft("cost", 10)}  ${padLeft("share", 6)}`);
@@ -1046,7 +1048,7 @@ function renderModelTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): 
 		const cost = range.modelCost.get(r.key) ?? 0;
 		const share = total > 0 ? `${Math.round((value / total) * 100)}%` : "0%";
 		lines.push(
-			`${padRight(r.key.slice(0, modelWidth), modelWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
+			`${padRight(truncateToWidth(r.key, modelWidth), modelWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
 		);
 	}
 
@@ -1081,7 +1083,7 @@ function renderCwdTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): st
 
 	const valueWidth = kind === "tokens" ? 10 : 8;
 	const displayPaths = rows.map((r) => abbreviatePath(r.key, 40));
-	const cwdWidth = Math.min(42, Math.max("directory".length, ...displayPaths.map((p) => p.length)));
+	const cwdWidth = Math.min(42, Math.max(visibleWidth("directory"), ...displayPaths.map((p) => visibleWidth(p))));
 
 	const lines: string[] = [];
 	lines.push(`${padRight("directory", cwdWidth)}  ${padLeft(label, valueWidth)}  ${padLeft("cost", 10)}  ${padLeft("share", 6)}`);
@@ -1093,7 +1095,7 @@ function renderCwdTable(range: RangeAgg, mode: MeasurementMode, maxRows = 8): st
 		const cost = range.cwdCost.get(r.key) ?? 0;
 		const share = total > 0 ? `${Math.round((value / total) * 100)}%` : "0%";
 		lines.push(
-			`${padRight(displayPaths[i].slice(0, cwdWidth), cwdWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
+			`${padRight(truncateToWidth(displayPaths[i], cwdWidth), cwdWidth)}  ${padLeft(formatCount(value), valueWidth)}  ${padLeft(formatUsd(cost), 10)}  ${padLeft(share, 6)}`,
 		);
 	}
 
