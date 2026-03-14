@@ -4,6 +4,8 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Fixed `intercepted-commands/python` and `intercepted-commands/python3` to avoid recursive `uv` spawn loops by resolving a uv-managed non-shim interpreter for `uv run --python`.
+
 ## 1.5.0
 
 * Added a `multi-edit` extension that replaces `edit` with support for batched `multi` edits and Codex-style `patch` payloads.

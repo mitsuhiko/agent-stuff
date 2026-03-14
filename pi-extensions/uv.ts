@@ -8,8 +8,9 @@
  * Intercepted commands:
  * - pip/pip3: Blocked with suggestions to use `uv add` or `uv run --with`
  * - poetry: Blocked with uv equivalents (uv init, uv add, uv sync, uv run)
- * - python/python3: Redirected to `uv run python`, with special handling to
- *   block `python -m pip`, `python -m venv`, and `python -m py_compile`
+ * - python/python3: Redirected through `uv run` to a real interpreter path,
+ *   with special handling to block `python -m pip`, `python -m venv`, and
+ *   `python -m py_compile`
  *
  * The shim scripts are located in the intercepted-commands directory and
  * provide helpful error messages with the equivalent uv commands.
