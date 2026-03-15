@@ -1,5 +1,7 @@
 #!/bin/bash
 
+INTERCEPTED_COMMANDS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Check for disallowed module invocations
 for arg in "$@"; do
     case "$arg" in
@@ -61,33 +63,67 @@ for arg in "$@"; do
 done
 
 # Resolve a Python interpreter for uv. Prefer uv-managed Python to match
-# `uv run python` defaults, while still avoiding shim recursion.
+# `uv run python` defaults, while avoiding recursive shim chains
+# (intercepted-commands, pyenv/asdf/mise shims, etc.).
+resolve_pyenv_shim() {
+    local candidate="$1" candidate_name candidate_dir resolved resolved_dir
+
+    candidate_dir="$(cd "$(dirname "$candidate")" && pwd -P)"
+    case "$candidate_dir" in
+        */.pyenv/shims)
+            command -v pyenv >/dev/null 2>&1 || return 1
+            candidate_name="$(basename "$candidate")"
+            resolved="$(pyenv which "$candidate_name" 2>/dev/null || true)"
+            [ -n "$resolved" ] && [ -x "$resolved" ] || return 1
+            resolved_dir="$(cd "$(dirname "$resolved")" && pwd -P)"
+            [ "$resolved_dir" = "$INTERCEPTED_COMMANDS_DIR" ] && return 1
+            [ "$(basename "$resolved_dir")" = "shims" ] && return 1
+            echo "$resolved"
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+normalize_uv_python_candidate() {
+    local candidate="$1" candidate_dir
+
+    [ -n "$candidate" ] && [ -x "$candidate" ] || return 1
+    candidate_dir="$(cd "$(dirname "$candidate")" && pwd -P)"
+
+    [ "$candidate_dir" = "$INTERCEPTED_COMMANDS_DIR" ] && return 1
+
+    if [ "$(basename "$candidate_dir")" = "shims" ]; then
+        resolve_pyenv_shim "$candidate" && return 0
+        return 1
+    fi
+
+    echo "$candidate"
+    return 0
+}
+
 resolve_uv_python() {
-    local shim_dir candidate candidate_dir
-    shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local candidate normalized
 
     candidate="$(uv python find --managed-python 2>/dev/null || true)"
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
-        if [ "$candidate_dir" != "$shim_dir" ]; then
-            echo "$candidate"
-            return 0
-        fi
+    normalized="$(normalize_uv_python_candidate "$candidate" || true)"
+    if [ -n "$normalized" ]; then
+        echo "$normalized"
+        return 0
     fi
 
     while IFS= read -r candidate; do
-        [ -n "$candidate" ] || continue
-        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
-        [ "$candidate_dir" = "$shim_dir" ] && continue
-        echo "$candidate"
+        normalized="$(normalize_uv_python_candidate "$candidate" || true)"
+        [ -n "$normalized" ] || continue
+        echo "$normalized"
         return 0
     done < <(type -aP python3 2>/dev/null)
 
     while IFS= read -r candidate; do
-        [ -n "$candidate" ] || continue
-        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
-        [ "$candidate_dir" = "$shim_dir" ] && continue
-        echo "$candidate"
+        normalized="$(normalize_uv_python_candidate "$candidate" || true)"
+        [ -n "$normalized" ] || continue
+        echo "$normalized"
         return 0
     done < <(type -aP python 2>/dev/null)
 
