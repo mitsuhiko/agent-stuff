@@ -48,7 +48,7 @@ import {
 	Text,
 	TUI,
 	fuzzyMatch,
-	getEditorKeybindings,
+	getKeybindings,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
@@ -397,25 +397,25 @@ class TodoSelectorComponent extends Container implements Focusable {
 	}
 
 	handleInput(keyData: string): void {
-		const kb = getEditorKeybindings();
-		if (kb.matches(keyData, "selectUp")) {
+		const kb = getKeybindings();
+		if (kb.matches(keyData, "tui.select.up")) {
 			if (this.filteredTodos.length === 0) return;
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredTodos.length - 1 : this.selectedIndex - 1;
 			this.updateList();
 			return;
 		}
-		if (kb.matches(keyData, "selectDown")) {
+		if (kb.matches(keyData, "tui.select.down")) {
 			if (this.filteredTodos.length === 0) return;
 			this.selectedIndex = this.selectedIndex === this.filteredTodos.length - 1 ? 0 : this.selectedIndex + 1;
 			this.updateList();
 			return;
 		}
-		if (kb.matches(keyData, "selectConfirm")) {
+		if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredTodos[this.selectedIndex];
 			if (selected) this.onSelectCallback(selected);
 			return;
 		}
-		if (kb.matches(keyData, "selectCancel")) {
+		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
 			return;
 		}
@@ -573,28 +573,28 @@ class TodoDetailOverlayComponent {
 	}
 
 	handleInput(keyData: string): void {
-		const kb = getEditorKeybindings();
-		if (kb.matches(keyData, "selectCancel")) {
+		const kb = getKeybindings();
+		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onAction("back");
 			return;
 		}
-		if (kb.matches(keyData, "selectConfirm")) {
+		if (kb.matches(keyData, "tui.select.confirm")) {
 			this.onAction("work");
 			return;
 		}
-		if (kb.matches(keyData, "selectUp")) {
+		if (kb.matches(keyData, "tui.select.up")) {
 			this.scrollBy(-1);
 			return;
 		}
-		if (kb.matches(keyData, "selectDown")) {
+		if (kb.matches(keyData, "tui.select.down")) {
 			this.scrollBy(1);
 			return;
 		}
-		if (kb.matches(keyData, "selectPageUp") || matchesKey(keyData, Key.left)) {
+		if (kb.matches(keyData, "tui.select.pageUp") || matchesKey(keyData, Key.left)) {
 			this.scrollBy(-this.viewHeight || -1);
 			return;
 		}
-		if (kb.matches(keyData, "selectPageDown") || matchesKey(keyData, Key.right)) {
+		if (kb.matches(keyData, "tui.select.pageDown") || matchesKey(keyData, Key.right)) {
 			this.scrollBy(this.viewHeight || 1);
 			return;
 		}
@@ -1257,7 +1257,7 @@ function renderTodoDetail(theme: Theme, todo: TodoRecord, expanded: boolean): st
 }
 
 function appendExpandHint(theme: Theme, text: string): string {
-	return `${text}\n${theme.fg("dim", `(${keyHint("expandTools", "to expand")})`)}`;
+	return `${text}\n${theme.fg("dim", `(${keyHint("app.tools.expand", "to expand")})`)}`;
 }
 
 async function ensureTodoExists(filePath: string, id: string): Promise<TodoRecord | null> {
