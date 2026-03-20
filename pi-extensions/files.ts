@@ -24,7 +24,7 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import {
 	Container,
 	fuzzyFilter,
-	getEditorKeybindings,
+	getKeybindings,
 	Input,
 	matchesKey,
 	type SelectItem,
@@ -937,16 +937,16 @@ const showFileSelector = async (
 					}
 				}
 
-				const kb = getEditorKeybindings();
+				const kb = getKeybindings();
 				if (
-					kb.matches(data, "selectUp") ||
-					kb.matches(data, "selectDown") ||
-					kb.matches(data, "selectConfirm") ||
-					kb.matches(data, "selectCancel")
+					kb.matches(data, "tui.select.up") ||
+					kb.matches(data, "tui.select.down") ||
+					kb.matches(data, "tui.select.confirm") ||
+					kb.matches(data, "tui.select.cancel")
 				) {
 					if (selectList) {
 						selectList.handleInput(data);
-					} else if (kb.matches(data, "selectCancel")) {
+					} else if (kb.matches(data, "tui.select.cancel")) {
 						done(null);
 					}
 					tui.requestRender();
