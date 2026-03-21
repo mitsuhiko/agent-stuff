@@ -33,6 +33,7 @@ All skills live in the [`skills`](skills) folder:
 Custom extensions for Pi Coding Agent are in [`pi-extensions`](pi-extensions):
 
 * [`answer.ts`](pi-extensions/answer.ts) - Interactive TUI for answering questions one by one.
+* [`btw.ts`](pi-extensions/btw.ts) - Simple `/btw` side-chat popover with optional summary injection back into the main chat on close.
 * [`context.ts`](pi-extensions/context.ts) - Context breakdown (extensions, skills, AGENTS.md/CLAUDE.md) + token usage, including loaded-skill highlighting.
 * [`control.ts`](pi-extensions/control.ts) - Session control helpers (list controllable sessions, etc.).
 * [`files.ts`](pi-extensions/files.ts) - Unified file browser with git status + session references and reveal/open/edit/diff actions.
