@@ -24,7 +24,6 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import {
 	Container,
 	fuzzyFilter,
-	getEditorKeybindings,
 	Input,
 	matchesKey,
 	type SelectItem,
@@ -856,7 +855,7 @@ const showFileSelector = async (
 	});
 
 	let quickAction: "diff" | null = null;
-	const selection = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+	const selection = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 		container.addChild(new Text(theme.fg("accent", theme.bold(" Select file")), 0, 0));
@@ -937,16 +936,15 @@ const showFileSelector = async (
 					}
 				}
 
-				const kb = getEditorKeybindings();
 				if (
-					kb.matches(data, "tui.select.up") ||
-					kb.matches(data, "tui.select.down") ||
-					kb.matches(data, "tui.select.confirm") ||
-					kb.matches(data, "tui.select.cancel")
+					keybindings.matches(data, "tui.select.up") ||
+					keybindings.matches(data, "tui.select.down") ||
+					keybindings.matches(data, "tui.select.confirm") ||
+					keybindings.matches(data, "tui.select.cancel")
 				) {
 					if (selectList) {
 						selectList.handleInput(data);
-					} else if (kb.matches(data, "tui.select.cancel")) {
+					} else if (keybindings.matches(data, "tui.select.cancel")) {
 						done(null);
 					}
 					tui.requestRender();
