@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEventResult } from "@mariozechner/pi-coding-agent";
 
 // "After midnight" usually means late-night usage. Default window: 00:00-05:59 local time.
 const QUIET_HOURS_START = 0;
@@ -134,7 +134,7 @@ export default function goToBedExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("tool_call", async (event) => {
+	pi.on("tool_call", async (event): Promise<ToolCallEventResult | void> => {
 		const now = new Date();
 		if (!isQuietHours(now)) {
 			confirmedNightKey = null;

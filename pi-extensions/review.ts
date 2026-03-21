@@ -1131,14 +1131,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				handleInput(data: string) {
 					const kb = getEditorKeybindings();
 					if (
-						kb.matches(data, "selectUp") ||
-						kb.matches(data, "selectDown") ||
-						kb.matches(data, "selectConfirm") ||
-						kb.matches(data, "selectCancel")
+						kb.matches(data, "tui.select.up") ||
+						kb.matches(data, "tui.select.down") ||
+						kb.matches(data, "tui.select.confirm") ||
+						kb.matches(data, "tui.select.cancel")
 					) {
 						if (selectList) {
 							selectList.handleInput(data);
-						} else if (kb.matches(data, "selectCancel")) {
+						} else if (kb.matches(data, "tui.select.cancel")) {
 							done(null);
 						}
 						tui.requestRender();
@@ -1238,14 +1238,14 @@ export default function reviewExtension(pi: ExtensionAPI) {
 				handleInput(data: string) {
 					const kb = getEditorKeybindings();
 					if (
-						kb.matches(data, "selectUp") ||
-						kb.matches(data, "selectDown") ||
-						kb.matches(data, "selectConfirm") ||
-						kb.matches(data, "selectCancel")
+						kb.matches(data, "tui.select.up") ||
+						kb.matches(data, "tui.select.down") ||
+						kb.matches(data, "tui.select.confirm") ||
+						kb.matches(data, "tui.select.cancel")
 					) {
 						if (selectList) {
 							selectList.handleInput(data);
-						} else if (kb.matches(data, "selectCancel")) {
+						} else if (kb.matches(data, "tui.select.cancel")) {
 							done(null);
 						}
 						tui.requestRender();
