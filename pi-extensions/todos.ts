@@ -1799,21 +1799,6 @@ export default function todosExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("todos", {
 		description: "List todos from .pi/todos",
-		getArgumentCompletions: (argumentPrefix: string) => {
-			const todos = listTodosSync(getTodosDir(process.cwd()));
-			if (!todos.length) return null;
-			const matches = filterTodos(todos, argumentPrefix);
-			if (!matches.length) return null;
-			return matches.map((todo) => {
-				const title = todo.title || "(untitled)";
-				const tags = todo.tags.length ? ` • ${todo.tags.join(", ")}` : "";
-				return {
-					value: title,
-					label: `${formatTodoId(todo.id)} ${title}`,
-					description: `${todo.status || "open"}${tags}`,
-				};
-			});
-		},
 		handler: async (args, ctx) => {
 			const todosDir = getTodosDir(ctx.cwd);
 			const todos = await listTodos(todosDir);
