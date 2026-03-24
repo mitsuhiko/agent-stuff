@@ -124,7 +124,8 @@ function buildSkillIndex(pi: ExtensionAPI, cwd: string): SkillIndexEntry[] {
 		.getCommands()
 		.filter((c) => c.source === "skill")
 		.map((c) => {
-			const p = c.path ? normalizeReadPath(c.path, cwd) : "";
+			const rawPath = c.sourceInfo?.path;
+			const p = rawPath ? normalizeReadPath(rawPath, cwd) : "";
 			return {
 				name: normalizeSkillName(c.name),
 				skillFilePath: p,
@@ -479,7 +480,7 @@ export default function contextExtension(pi: ExtensionAPI) {
 
 			const extensionsByPath = new Map<string, string[]>();
 			for (const c of extensionCmds) {
-				const p = c.path ?? "<unknown>";
+				const p = c.sourceInfo?.path ?? "<unknown>";
 				const arr = extensionsByPath.get(p) ?? [];
 				arr.push(c.name);
 				extensionsByPath.set(p, arr);
