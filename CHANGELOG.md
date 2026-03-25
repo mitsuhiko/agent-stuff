@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Fixed `intercepted-commands/python` and `intercepted-commands/python3` to skip pyenv/asdf/mise-style shim interpreters when selecting `UV_PYTHON`, preventing recursive `uv run` process chains.
 * Fixed `intercepted-commands/python` and `intercepted-commands/python3` to avoid recursive `uv` spawn loops by resolving a uv-managed non-shim interpreter for `uv run --python`.
 
 ## 1.5.0
