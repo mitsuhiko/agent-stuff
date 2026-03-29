@@ -410,12 +410,12 @@ class TodoSelectorComponent extends Container implements Focusable {
 			this.updateList();
 			return;
 		}
-		if (kb.matches(keyData, "selectConfirm")) {
+		if (kb.matches(keyData, "tui.select.confirm")) {
 			const selected = this.filteredTodos[this.selectedIndex];
 			if (selected) this.onSelectCallback(selected);
 			return;
 		}
-		if (kb.matches(keyData, "selectCancel")) {
+		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onCancelCallback();
 			return;
 		}
@@ -574,11 +574,11 @@ class TodoDetailOverlayComponent {
 
 	handleInput(keyData: string): void {
 		const kb = getEditorKeybindings();
-		if (kb.matches(keyData, "selectCancel")) {
+		if (kb.matches(keyData, "tui.select.cancel")) {
 			this.onAction("back");
 			return;
 		}
-		if (kb.matches(keyData, "selectConfirm")) {
+		if (kb.matches(keyData, "tui.select.confirm")) {
 			this.onAction("work");
 			return;
 		}
@@ -1256,7 +1256,7 @@ function renderTodoDetail(theme: Theme, todo: TodoRecord, expanded: boolean): st
 }
 
 function appendExpandHint(theme: Theme, text: string): string {
-	return `${text}\n${theme.fg("dim", `(${keyHint("expandTools", "to expand")})`)}`;
+	return `${text}\n${theme.fg("dim", `(${keyHint("app.tools.expand", "to expand")})`)}`;
 }
 
 async function ensureTodoExists(filePath: string, id: string): Promise<TodoRecord | null> {
