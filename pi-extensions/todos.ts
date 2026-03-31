@@ -63,6 +63,8 @@ const DEFAULT_TODO_SETTINGS = {
 	gcDays: 7,
 };
 const LOCK_TTL_MS = 30 * 60 * 1000;
+const TODO_WIDGET_ID = "todos";
+const TODO_WIDGET_MAX_ITEMS = 3;
 
 interface TodoFrontMatter {
 	id: string;
@@ -1154,6 +1156,68 @@ function splitTodosByAssignment(todos: TodoFrontMatter[]): {
 	return { assignedTodos, openTodos, closedTodos };
 }
 
+function renderTodoWidgetItem(theme: Theme, todo: TodoFrontMatter, currentSessionId?: string): string {
+	const assignedToCurrent = todo.assigned_to_session === currentSessionId;
+	const bullet = todo.assigned_to_session
+		? theme.fg(assignedToCurrent ? "success" : "muted", "•")
+		: theme.fg("dim", "•");
+	const assignment = !todo.assigned_to_session
+		? ""
+		: assignedToCurrent
+			? theme.fg("success", " [mine]")
+			: theme.fg("muted", " [assigned]");
+	return `${bullet} ${theme.fg("accent", formatTodoId(todo.id))} ${theme.fg("text", getTodoTitle(todo))}${assignment}`;
+}
+
+function buildTodoWidgetLines(
+	theme: Theme,
+	todos: TodoFrontMatter[],
+	currentSessionId?: string,
+): string[] {
+	const openTodos = todos.filter((todo) => !isTodoClosed(getTodoStatus(todo)));
+	if (!openTodos.length) return [];
+
+	const visibleTodos = openTodos.slice(0, TODO_WIDGET_MAX_ITEMS);
+	const overflow = openTodos.length - visibleTodos.length;
+	const lines = [theme.fg("accent", theme.bold(`Open todos (${openTodos.length})`))];
+
+	for (const todo of visibleTodos) {
+		lines.push(renderTodoWidgetItem(theme, todo, currentSessionId));
+	}
+
+	if (overflow > 0) {
+		lines.push(
+			theme.fg(
+				"dim",
+				`… ${overflow} more open ${overflow === 1 ? "todo" : "todos"}`,
+			),
+		);
+	}
+
+	return lines;
+}
+
+async function refreshTodoWidget(ctx: ExtensionContext, todos?: TodoFrontMatter[]): Promise<void> {
+	if (!ctx.hasUI) return;
+
+	const allTodos = todos ?? (await listTodos(getTodosDir(ctx.cwd)));
+	const openTodos = allTodos.filter((todo) => !isTodoClosed(getTodoStatus(todo)));
+	if (!openTodos.length) {
+		ctx.ui.setWidget(TODO_WIDGET_ID, undefined);
+		return;
+	}
+
+	const currentSessionId = ctx.sessionManager.getSessionId();
+	ctx.ui.setWidget(TODO_WIDGET_ID, (_tui, theme) => ({
+		render(width: number) {
+			return buildTodoWidgetLines(theme, openTodos, currentSessionId).map((line) =>
+				truncateToWidth(line, width),
+			);
+		},
+		invalidate() {},
+	}));
+}
+
 function formatTodoList(todos: TodoFrontMatter[]): string {
 	if (!todos.length) return "No todos.";
 
@@ -1435,6 +1499,20 @@ export default function todosExtension(pi: ExtensionAPI) {
 		await ensureTodosDir(todosDir);
 		const settings = await readTodoSettings(todosDir);
 		await garbageCollectTodos(todosDir, settings);
+		await refreshTodoWidget(ctx);
+	});
+
+	pi.on("session_switch", async (_event, ctx) => {
+		await refreshTodoWidget(ctx);
+	});
+
+	pi.on("session_fork", async (_event, ctx) => {
+		await refreshTodoWidget(ctx);
+	});
+
+	pi.on("tool_result", async (event, ctx) => {
+		if (event.toolName !== "todo") return;
+		await refreshTodoWidget(ctx);
 	});
 
 	const todosDirLabel = getTodosDirLabel(process.cwd());
@@ -1883,6 +1961,12 @@ export default function todosExtension(pi: ExtensionAPI) {
 					return record;
 				};
 
+				const syncTodoUi = async () => {
+					const updatedTodos = await listTodos(todosDir);
+					selector?.setTodos(updatedTodos);
+					await refreshTodoWidget(ctx, updatedTodos);
+				};
+
 				const openTodoOverlay = async (record: TodoRecord): Promise<TodoOverlayAction> => {
 					const action = await ctx.ui.custom<TodoOverlayAction>(
 						(overlayTui, overlayTheme, overlayKeybindings, overlayDone) =>
@@ -1936,8 +2020,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 							ctx.ui.notify(result.error, "error");
 							return "stay";
 						}
-						const updatedTodos = await listTodos(todosDir);
-						selector?.setTodos(updatedTodos);
+						await syncTodoUi();
 						ctx.ui.notify(`Released todo ${formatTodoId(record.id)}`, "info");
 						return "stay";
 					}
@@ -1948,8 +2031,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 							ctx.ui.notify(result.error, "error");
 							return "stay";
 						}
-						const updatedTodos = await listTodos(todosDir);
-						selector?.setTodos(updatedTodos);
+						await syncTodoUi();
 						ctx.ui.notify(`Deleted todo ${formatTodoId(record.id)}`, "info");
 						return "stay";
 					}
@@ -1961,8 +2043,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 						return "stay";
 					}
 
-					const updatedTodos = await listTodos(todosDir);
-					selector?.setTodos(updatedTodos);
+					await syncTodoUi();
 					ctx.ui.notify(
 						`${action === "close" ? "Closed" : "Reopened"} todo ${formatTodoId(record.id)}`,
 						"info",
