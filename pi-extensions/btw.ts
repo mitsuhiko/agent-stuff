@@ -566,7 +566,7 @@ export default function (pi: ExtensionAPI) {
 
 		const seedMessages = buildSeedMessages(ctx, thread);
 		if (seedMessages.length > 0) {
-			session.agent.replaceMessages(seedMessages as typeof session.state.messages);
+			session.agent.state.messages = seedMessages as typeof session.state.messages;
 		}
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
