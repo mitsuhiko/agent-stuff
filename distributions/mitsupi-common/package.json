@@ -1,0 +1,97 @@
+{
+  "name": "mitsupi-common",
+  "version": "1.5.0",
+  "description": "Common/default Mitsupi package without heavy travel and CAD extras",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mitsuhiko/agent-stuff.git",
+    "directory": "distributions/mitsupi-common"
+  },
+  "readme": "README.md",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "pi-theme"
+  ],
+  "pi": {
+    "extensions": [
+      "../../extensions/answer.ts",
+      "../../extensions/btw.ts",
+      "../../extensions/context.ts",
+      "../../extensions/control.ts",
+      "../../extensions/files.ts",
+      "../../extensions/loop.ts",
+      "../../extensions/multi-edit.ts",
+      "../../extensions/notify.ts",
+      "../../extensions/prompt-editor.ts",
+      "../../extensions/review.ts",
+      "../../extensions/session-breakdown.ts",
+      "../../extensions/split-fork.ts",
+      "../../extensions/todos.ts",
+      "../../extensions/uv.ts",
+      "../../extensions/whimsical.ts",
+      "node_modules/mitsupi/extensions/answer.ts",
+      "node_modules/mitsupi/extensions/btw.ts",
+      "node_modules/mitsupi/extensions/context.ts",
+      "node_modules/mitsupi/extensions/control.ts",
+      "node_modules/mitsupi/extensions/files.ts",
+      "node_modules/mitsupi/extensions/loop.ts",
+      "node_modules/mitsupi/extensions/multi-edit.ts",
+      "node_modules/mitsupi/extensions/notify.ts",
+      "node_modules/mitsupi/extensions/prompt-editor.ts",
+      "node_modules/mitsupi/extensions/review.ts",
+      "node_modules/mitsupi/extensions/session-breakdown.ts",
+      "node_modules/mitsupi/extensions/split-fork.ts",
+      "node_modules/mitsupi/extensions/todos.ts",
+      "node_modules/mitsupi/extensions/uv.ts",
+      "node_modules/mitsupi/extensions/whimsical.ts"
+    ],
+    "skills": [
+      "../../skills/commit",
+      "../../skills/frontend-design",
+      "../../skills/ghidra",
+      "../../skills/github",
+      "../../skills/google-workspace",
+      "../../skills/librarian",
+      "../../skills/mermaid",
+      "../../skills/native-web-search",
+      "../../skills/pi-share",
+      "../../skills/sentry",
+      "../../skills/summarize",
+      "../../skills/tmux",
+      "../../skills/update-changelog",
+      "../../skills/uv",
+      "../../skills/web-browser",
+      "node_modules/mitsupi/skills/commit",
+      "node_modules/mitsupi/skills/frontend-design",
+      "node_modules/mitsupi/skills/ghidra",
+      "node_modules/mitsupi/skills/github",
+      "node_modules/mitsupi/skills/google-workspace",
+      "node_modules/mitsupi/skills/librarian",
+      "node_modules/mitsupi/skills/mermaid",
+      "node_modules/mitsupi/skills/native-web-search",
+      "node_modules/mitsupi/skills/pi-share",
+      "node_modules/mitsupi/skills/sentry",
+      "node_modules/mitsupi/skills/summarize",
+      "node_modules/mitsupi/skills/tmux",
+      "node_modules/mitsupi/skills/update-changelog",
+      "node_modules/mitsupi/skills/uv",
+      "node_modules/mitsupi/skills/web-browser"
+    ],
+    "themes": [
+      "../../themes",
+      "node_modules/mitsupi/themes"
+    ],
+    "prompts": [
+      "../../commands",
+      "node_modules/mitsupi/commands"
+    ]
+  },
+  "dependencies": {
+    "mitsupi": "^1.5.0"
+  },
+  "bundledDependencies": [
+    "mitsupi"
+  ]
+}

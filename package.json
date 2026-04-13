@@ -16,13 +16,13 @@
   ],
   "pi": {
     "extensions": [
-      "./pi-extensions"
+      "./extensions"
     ],
     "skills": [
       "./skills"
     ],
     "themes": [
-      "./pi-themes"
+      "./themes"
     ],
     "prompts": [
       "./commands"
