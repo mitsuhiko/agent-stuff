@@ -4,6 +4,16 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+## 1.6.0
+
+* Added a redesigned `btw` extension with side chat markdown rendering, tool visibility, deferred session creation, and main-context improvements.
+* Added a `/split-fork` Ghostty fork command for opening split sessions.
+* Added email-based multi-account authentication to the `google-workspace` skill.
+* Added left/right arrow key paging in the todo detail overlay. (#15)
+* Added a shared custom instructions toggle to review workflows.
+* Updated extensions for the new command and API-key APIs, including namespaced keybindings and `sourceInfo` support.
+* Improved the `multi-edit` extension with sequential same-file ordering, redundant-edit skipping, and clearer patch-mode diff output.
+* Fixed the `web-browser` skill and session-control refresh behavior after forks. (#16)
 * Fixed `intercepted-commands/python` and `intercepted-commands/python3` to avoid recursive `uv` spawn loops by resolving a uv-managed non-shim interpreter for `uv run --python`.
 
 ## 1.5.0
