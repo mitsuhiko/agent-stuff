@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { connect } from "./cdp.js";
+import { applyActiveEmulation } from "./emulation-state.js";
 
 const DEBUG = process.env.DEBUG === "1";
 const log = DEBUG ? (...args) => console.error("[debug]", ...args) : () => {};
@@ -48,10 +49,18 @@ try {
   log("attaching to page...");
   const sessionId = await cdp.attachToPage(targetId);
 
+  log("applying active emulation (if configured)...");
+  const activeEmulation = await applyActiveEmulation(cdp, sessionId);
+
   log("navigating...");
   await cdp.navigate(sessionId, url);
 
   console.log(newTab ? "✓ Opened:" : "✓ Navigated to:", url);
+  if (activeEmulation) {
+    console.log(
+      `  emulation: ${activeEmulation.preset.id}${activeEmulation.landscape ? " (landscape)" : ""}`,
+    );
+  }
 
   log("closing...");
   cdp.close();
