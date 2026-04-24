@@ -1,6 +1,7 @@
 import {
 	buildSessionContext,
 	codingTools,
+	copyToClipboard,
 	createAgentSession,
 	createExtensionRuntime,
 	getMarkdownTheme,
@@ -186,12 +187,16 @@ function formatThread(thread: BtwDetails[]): string {
 		.join("\n\n---\n\n");
 }
 
+function stripAnsi(str: string): string {
+	// eslint-disable-next-line no-control-regex
+	return str.replace(/\x1B\[[0-9;]*m/g, "");
+}
+
 function notify(ctx: ExtensionContext | ExtensionCommandContext, message: string, level: "info" | "warning" | "error"): void {
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, level);
 	}
 }
-
 
 class BtwOverlay extends Container implements Focusable {
 	private readonly input: Input;
@@ -202,7 +207,19 @@ class BtwOverlay extends Container implements Focusable {
 	private readonly getStatus: () => string;
 	private readonly onSubmitCallback: (value: string) => void;
 	private readonly onDismissCallback: () => void;
+	private readonly onInjectCallback: (text: string) => void;
+	private readonly getTitleExtra?: () => string;
 	private _focused = false;
+
+	// Browse / select state
+	private browseMode = false;
+	private scrollOffset = 0;
+	private cursorLine = 0;
+	private renderedLineCount = 0;
+	private lastRenderedLines: string[] = [];
+	private selectMode = false;
+	private selectedLines = new Set<number>();
+	private viewHeight = 0;
 
 	get focused(): boolean {
 		return this._focused;
@@ -210,7 +227,7 @@ class BtwOverlay extends Container implements Focusable {
 
 	set focused(value: boolean) {
 		this._focused = value;
-		this.input.focused = value;
+		this.input.focused = value && !this.browseMode;
 	}
 
 	constructor(
@@ -221,6 +238,8 @@ class BtwOverlay extends Container implements Focusable {
 		getStatus: () => string,
 		onSubmit: (value: string) => void,
 		onDismiss: () => void,
+		onInject: (text: string) => void,
+		getTitleExtra?: () => string,
 	) {
 		super();
 		this.tui = tui;
@@ -230,6 +249,8 @@ class BtwOverlay extends Container implements Focusable {
 		this.getStatus = getStatus;
 		this.onSubmitCallback = onSubmit;
 		this.onDismissCallback = onDismiss;
+		this.onInjectCallback = onInject;
+		this.getTitleExtra = getTitleExtra;
 
 		this.input = new Input();
 		this.input.onSubmit = (value) => {
@@ -241,8 +262,91 @@ class BtwOverlay extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (this.keybindings.matches(data, "selectCancel")) {
+		const kb = this.keybindings;
+
+		if (kb.matches(data, "selectCancel")) {
+			if (this.selectMode) {
+				this.selectMode = false;
+				this.selectedLines.clear();
+				this.tui.requestRender();
+				return;
+			}
 			this.onDismissCallback();
+			return;
+		}
+
+		// Tab toggles browse mode
+		if (data === "\t") {
+			this.browseMode = !this.browseMode;
+			if (!this.browseMode) {
+				this.selectMode = false;
+				this.selectedLines.clear();
+			}
+			this.input.focused = !this.browseMode;
+			this.tui.requestRender();
+			return;
+		}
+
+		if (this.browseMode) {
+			if (kb.matches(data, "tui.select.up")) {
+				this.cursorLine = Math.max(0, this.cursorLine - 1);
+				this.ensureCursorVisible();
+				this.tui.requestRender();
+				return;
+			}
+			if (kb.matches(data, "tui.select.down")) {
+				this.cursorLine = Math.min(Math.max(0, this.renderedLineCount - 1), this.cursorLine + 1);
+				this.ensureCursorVisible();
+				this.tui.requestRender();
+				return;
+			}
+			if (kb.matches(data, "tui.select.pageUp")) {
+				this.cursorLine = Math.max(0, this.cursorLine - this.viewHeight);
+				this.scrollOffset = Math.max(0, this.scrollOffset - this.viewHeight);
+				this.tui.requestRender();
+				return;
+			}
+			if (kb.matches(data, "tui.select.pageDown")) {
+				this.cursorLine = Math.min(Math.max(0, this.renderedLineCount - 1), this.cursorLine + this.viewHeight);
+				this.scrollOffset = Math.min(Math.max(0, this.renderedLineCount - this.viewHeight), this.scrollOffset + this.viewHeight);
+				this.tui.requestRender();
+				return;
+			}
+			if (data === "v" || data === "V") {
+				this.selectMode = !this.selectMode;
+				if (!this.selectMode) {
+					this.selectedLines.clear();
+				}
+				this.tui.requestRender();
+				return;
+			}
+			if ((data === "s" || data === "S") && this.selectMode) {
+				if (this.selectedLines.has(this.cursorLine)) {
+					this.selectedLines.delete(this.cursorLine);
+				} else {
+					this.selectedLines.add(this.cursorLine);
+				}
+				this.tui.requestRender();
+				return;
+			}
+			if (data === "i" || data === "I") {
+				const text = this.getSelectedText();
+				if (text) {
+					this.onInjectCallback(text);
+				}
+				return;
+			}
+			if (data === "c" || data === "C") {
+				const text = this.getSelectedText();
+				if (text) {
+					try {
+						copyToClipboard(text);
+					} catch {
+						// Ignore clipboard errors
+					}
+				}
+				return;
+			}
 			return;
 		}
 
@@ -258,6 +362,15 @@ class BtwOverlay extends Container implements Focusable {
 		return this.input.getValue();
 	}
 
+	private getSelectedText(): string {
+		const lines = this.lastRenderedLines;
+		if (this.selectMode && this.selectedLines.size > 0) {
+			const sorted = Array.from(this.selectedLines).sort((a, b) => a - b);
+			return sorted.map((idx) => stripAnsi(lines[idx] || "")).join("\n");
+		}
+		return stripAnsi(lines[this.cursorLine] || "");
+	}
+
 	private frameLine(content: string, innerWidth: number): string {
 		const truncated = truncateToWidth(content, innerWidth, "");
 		const padding = Math.max(0, innerWidth - visibleWidth(truncated));
@@ -270,6 +383,17 @@ class BtwOverlay extends Container implements Focusable {
 		return this.theme.fg("borderMuted", `${left}${"─".repeat(innerWidth)}${right}`);
 	}
 
+	private ensureCursorVisible(): void {
+		if (this.cursorLine < this.scrollOffset) {
+			this.scrollOffset = this.cursorLine;
+		}
+		if (this.cursorLine >= this.scrollOffset + this.viewHeight) {
+			this.scrollOffset = this.cursorLine - this.viewHeight + 1;
+		}
+		const maxScroll = Math.max(0, this.renderedLineCount - this.viewHeight);
+		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
+	}
+
 	override render(width: number): string[] {
 		const dialogWidth = Math.max(56, Math.min(width, Math.floor(width * 0.9)));
 		const innerWidth = Math.max(40, dialogWidth - 2);
@@ -277,10 +401,23 @@ class BtwOverlay extends Container implements Focusable {
 		const dialogHeight = Math.max(16, Math.min(30, Math.floor(terminalRows * 0.75)));
 		const chromeHeight = 7;
 		const transcriptHeight = Math.max(6, dialogHeight - chromeHeight);
+		this.viewHeight = transcriptHeight;
 
-		// Markdown renders to innerWidth already — no manual wrapping needed
-		const transcript = this.getTranscript(innerWidth, this.theme);
-		const visibleTranscript = transcript.slice(-transcriptHeight);
+		// In browse mode reserve 2 chars for cursor/selection prefix
+		const transcriptWidth = this.browseMode ? Math.max(1, innerWidth - 2) : innerWidth;
+		const transcript = this.getTranscript(transcriptWidth, this.theme);
+		this.renderedLineCount = transcript.length;
+		this.lastRenderedLines = transcript;
+
+		// Auto-scroll to bottom when not in browse mode
+		if (!this.browseMode) {
+			this.scrollOffset = Math.max(0, transcript.length - transcriptHeight);
+			this.cursorLine = Math.max(0, transcript.length - 1);
+		}
+
+		this.ensureCursorVisible();
+
+		const visibleTranscript = transcript.slice(this.scrollOffset, this.scrollOffset + transcriptHeight);
 		const transcriptPadding = Math.max(0, transcriptHeight - visibleTranscript.length);
 
 		const status = this.getStatus();
@@ -290,15 +427,24 @@ class BtwOverlay extends Container implements Focusable {
 		const inputLine = this.input.render(innerWidth)[0] ?? "";
 		this.input.focused = previousFocused;
 
+		const titleExtra = this.getTitleExtra ? ` ${this.getTitleExtra()}` : "";
 		const lines = [
 			this.borderLine(innerWidth, "top"),
-			this.frameLine(this.theme.fg("accent", this.theme.bold(" BTW side chat ")), innerWidth),
-			this.frameLine(this.theme.fg("dim", "Separate side conversation. Esc closes."), innerWidth),
+			this.frameLine(this.theme.fg("accent", this.theme.bold(` BTW side chat${titleExtra} `)), innerWidth),
+			this.frameLine(this.theme.fg("dim", "Separate side conversation. Esc closes · Tab browse"), innerWidth),
 			this.theme.fg("borderMuted", `├${"─".repeat(innerWidth)}┤`),
 		];
 
-		for (const line of visibleTranscript) {
-			lines.push(this.frameLine(line, innerWidth));
+		for (let i = 0; i < visibleTranscript.length; i++) {
+			const globalIndex = this.scrollOffset + i;
+			const isCursor = this.browseMode && globalIndex === this.cursorLine;
+			const isSelected = this.selectedLines.has(globalIndex);
+			let prefix = "";
+			if (isCursor && isSelected) prefix = "+>";
+			else if (isCursor) prefix = "> ";
+			else if (isSelected) prefix = "+ ";
+			else prefix = "  ";
+			lines.push(this.frameLine(prefix + visibleTranscript[i], innerWidth));
 		}
 		for (let i = 0; i < transcriptPadding; i++) {
 			lines.push(this.frameLine("", innerWidth));
@@ -309,7 +455,14 @@ class BtwOverlay extends Container implements Focusable {
 		lines.push(
 			`${this.theme.fg("borderMuted", "│")}${inputLine}${this.theme.fg("borderMuted", "│")}`,
 		);
-		lines.push(this.frameLine(this.theme.fg("dim", "Enter submit · Esc close"), innerWidth));
+
+		// Dynamic footer hint
+		const hint = this.browseMode
+			? this.selectMode
+				? "s toggle · v done · i inject · c copy · Tab input"
+				: "↑↓ navigate · v multi-select · i inject · c copy · Tab input"
+			: "Enter submit · Esc close · Tab browse";
+		lines.push(this.frameLine(this.theme.fg("dim", hint), innerWidth));
 		lines.push(this.borderLine(innerWidth, "bottom"));
 
 		return lines;
@@ -330,6 +483,16 @@ export default function (pi: ExtensionAPI) {
 	let overlayRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const mdTheme = getMarkdownTheme();
+
+	function formatTokens(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+		return String(n);
+	}
+
+	function getTotalTokens(): number {
+		return thread.reduce((sum, item) => sum + (item.usage?.totalTokens ?? 0), 0);
+	}
 
 	function getModelKey(ctx: ExtensionContext): string {
 		const model = ctx.model;
@@ -397,7 +560,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const lines: string[] = [];
-		for (const item of thread.slice(-6)) {
+		for (const item of thread) {
 			// User message
 			const userText = item.question.trim().split("\n")[0];
 			lines.push(theme.fg("accent", theme.bold("You: ")) + truncateToWidth(userText, width - 5, "…"));
@@ -406,6 +569,13 @@ export default function (pi: ExtensionAPI) {
 			// Assistant message rendered as markdown
 			const mdLines = renderMarkdownLines(item.answer, width);
 			lines.push(...mdLines);
+
+			// Model & token info
+			if (item.usage) {
+				const modelName = `${item.provider}/${item.model}`;
+				const tk = formatTokens(item.usage.totalTokens);
+				lines.push(theme.fg("dim", `  ${modelName} · ${tk} tokens`));
+			}
 			lines.push("");
 		}
 
@@ -420,6 +590,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (pendingError) {
 				lines.push(theme.fg("error", `❌ ${pendingError}`));
+				lines.push(theme.fg("dim", "  Press Enter to retry or type a new question"));
 			} else if (pendingAnswer) {
 				lines.push("");
 				const mdLines = renderMarkdownLines(pendingAnswer, width);
@@ -566,7 +737,7 @@ export default function (pi: ExtensionAPI) {
 
 		const seedMessages = buildSeedMessages(ctx, thread);
 		if (seedMessages.length > 0) {
-			session.agent.replaceMessages(seedMessages as typeof session.state.messages);
+			session.agent.state.messages = seedMessages as typeof session.agent.state.messages;
 		}
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
@@ -670,9 +841,13 @@ export default function (pi: ExtensionAPI) {
 		runtime.close = closeRuntime;
 		overlayRuntime = runtime;
 
-		void ctx.ui
+		let nextPrompt: string | null = null;
+		let rootTui: TUI | null = null;
+
+		ctx.ui
 			.custom<void>(
 				async (tui, theme, keybindings, done) => {
+					rootTui = tui;
 					runtime.finish = () => done();
 
 					const overlay = new BtwOverlay(
@@ -686,6 +861,19 @@ export default function (pi: ExtensionAPI) {
 						},
 						() => {
 							void closeOverlayFlow(ctx);
+						},
+						(text) => {
+							const quoted = text.split("\n").map((l) => `> ${l}`).join("\n");
+							nextPrompt = `From BTW side chat:\n${quoted}\n\n`;
+							done();
+						},
+						() => {
+							if (activeSideSession) return `[${activeSideSession.modelKey}]`;
+							if (thread.length > 0) {
+								const last = thread[thread.length - 1];
+								return `[${last.provider}/${last.model}]`;
+							}
+							return "";
 						},
 					);
 
@@ -725,6 +913,15 @@ export default function (pi: ExtensionAPI) {
 					},
 				},
 			)
+			.then(() => {
+				if (overlayRuntime === runtime) {
+					overlayRuntime = null;
+				}
+				if (nextPrompt && ctx.hasUI) {
+					ctx.ui.setEditorText(nextPrompt);
+					rootTui?.requestRender();
+				}
+			})
 			.catch((error) => {
 				if (overlayRuntime === runtime) {
 					overlayRuntime = null;
@@ -881,11 +1078,12 @@ export default function (pi: ExtensionAPI) {
 			pendingQuestion = null;
 			pendingAnswer = "";
 			pendingToolCalls = [];
-			setOverlayStatus("Ready for the next side question.");
+			const total = getTotalTokens();
+			setOverlayStatus(`Ready · ${formatTokens(total)} tokens`);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			pendingError = message;
-			setOverlayStatus("BTW request failed.");
+			setOverlayStatus("Error — Enter to retry");
 			notify(ctx, message, "error");
 		} finally {
 			sideBusy = false;
@@ -895,8 +1093,26 @@ export default function (pi: ExtensionAPI) {
 
 	async function submitFromOverlay(ctx: ExtensionContext | ExtensionCommandContext, rawValue: string): Promise<void> {
 		const question = rawValue.trim();
+
+		// Retry last failed question on empty submit
 		if (!question) {
+			if (pendingError && pendingQuestion) {
+				pendingError = null;
+				setOverlayDraft("");
+				await runBtwPrompt(ctx, pendingQuestion);
+				return;
+			}
 			setOverlayStatus("Enter a question first.");
+			return;
+		}
+
+		// Inline commands
+		if (question === "/clear") {
+			await resetThread(ctx, true);
+			return;
+		}
+		if (question === "/inject") {
+			await injectSummaryIntoMain(ctx);
 			return;
 		}
 
