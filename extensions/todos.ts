@@ -128,7 +128,12 @@ type TodoAction =
 	| "claim"
 	| "release";
 
-type TodoOverlayAction = "back" | "work";
+type TodoOverlayAction = "back" | "work" | "refine" | "close" | "delete";
+
+interface TodoOverlayResult {
+	action: TodoOverlayAction;
+	comment: { line: number; text: string } | null;
+}
 
 type TodoMenuAction =
 	| "work"
@@ -246,6 +251,11 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 		.map((match) => match.todo);
 }
 
+function stripAnsi(str: string): string {
+	// eslint-disable-next-line no-control-regex
+	return str.replace(/\x1B\[[0-9;]*m/g, "");
+}
+
 class TodoSelectorComponent extends Container implements Focusable {
 	private searchInput: Input;
 	private listContainer: Container;
@@ -280,6 +290,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		initialSearchInput?: string,
 		currentSessionId?: string,
 		private onQuickAction?: (todo: TodoFrontMatter, action: "work" | "refine") => void,
+		private onActionMenu?: (todo: TodoFrontMatter) => void,
 	) {
 		super();
 		this.tui = tui;
@@ -345,7 +356,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		this.hintText.setText(
 			this.theme.fg(
 				"dim",
-				"Type to search • ↑↓ select • Enter actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
+				"Type to search • ↑↓ select • Enter view • a actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
 			),
 		);
 	}
@@ -433,6 +444,11 @@ class TodoSelectorComponent extends Container implements Focusable {
 		if (matchesKey(keyData, Key.ctrlShift("w"))) {
 			const selected = this.filteredTodos[this.selectedIndex];
 			if (selected && this.onQuickAction) this.onQuickAction(selected, "work");
+			return;
+		}
+		if (keyData === "a" || keyData === "A") {
+			const selected = this.filteredTodos[this.selectedIndex];
+			if (selected && this.onActionMenu) this.onActionMenu(selected);
 			return;
 		}
 		this.searchInput.handleInput(keyData);
@@ -562,9 +578,14 @@ class TodoDetailOverlayComponent {
 	private markdown: Markdown;
 	private scrollOffset = 0;
 	private viewHeight = 0;
-	private totalLines = 0;
+	private cursorLine = 0;
+	private renderedLineCount = 0;
+	private lastRenderedLines: string[] = [];
+	private selectMode = false;
+	private selectedLines = new Set<number>();
 	private onAction: (action: TodoOverlayAction) => void;
 	private keybindings: KeybindingMatcher;
+	comment: { line: number; text: string } | null = null;
 
 	constructor(
 		tui: TUI,
@@ -578,7 +599,7 @@ class TodoDetailOverlayComponent {
 		this.keybindings = keybindings;
 		this.todo = todo;
 		this.onAction = onAction;
-		this.markdown = new Markdown(this.getMarkdownText(), 1, 0, getMarkdownTheme());
+		this.markdown = new Markdown(this.getMarkdownText(), 2, 0, getMarkdownTheme());
 	}
 
 	private getMarkdownText(): string {
@@ -589,6 +610,12 @@ class TodoDetailOverlayComponent {
 	handleInput(keyData: string): void {
 		const kb = this.keybindings;
 		if (kb.matches(keyData, "tui.select.cancel")) {
+			if (this.selectMode) {
+				this.selectMode = false;
+				this.selectedLines.clear();
+				this.tui.requestRender();
+				return;
+			}
 			this.onAction("back");
 			return;
 		}
@@ -596,69 +623,141 @@ class TodoDetailOverlayComponent {
 			this.onAction("work");
 			return;
 		}
+		if (keyData === "r" || keyData === "R") {
+			this.onAction("refine");
+			return;
+		}
+		if (keyData === "v" || keyData === "V") {
+			if (this.selectMode) {
+				this.selectMode = false;
+				this.selectedLines.clear();
+			} else {
+				this.selectMode = true;
+				this.selectedLines.clear();
+			}
+			this.tui.requestRender();
+			return;
+		}
+		if (keyData === "s" || keyData === "S") {
+			if (this.selectMode) {
+				if (this.selectedLines.has(this.cursorLine)) {
+					this.selectedLines.delete(this.cursorLine);
+				} else {
+					this.selectedLines.add(this.cursorLine);
+				}
+				this.tui.requestRender();
+			}
+			return;
+		}
+		if (keyData === "n" || keyData === "N") {
+			if (this.selectMode && this.selectedLines.size > 0) {
+				const sorted = Array.from(this.selectedLines).sort((a, b) => a - b);
+				const selText = sorted
+					.map((idx) => stripAnsi(this.lastRenderedLines[idx] || ""))
+					.join("\n");
+				this.comment = { line: sorted[0], text: selText };
+			} else {
+				const rawLine = this.lastRenderedLines[this.cursorLine] || "";
+				this.comment = { line: this.cursorLine, text: stripAnsi(rawLine) };
+			}
+			this.onAction("back");
+			return;
+		}
 		if (kb.matches(keyData, "tui.select.up")) {
-			this.scrollBy(-1);
+			this.cursorLine = Math.max(0, this.cursorLine - 1);
+			this.ensureCursorVisible();
+			this.tui.requestRender();
 			return;
 		}
 		if (kb.matches(keyData, "tui.select.down")) {
-			this.scrollBy(1);
+			this.cursorLine = Math.min(Math.max(0, this.renderedLineCount - 1), this.cursorLine + 1);
+			this.ensureCursorVisible();
+			this.tui.requestRender();
 			return;
 		}
 		if (kb.matches(keyData, "tui.select.pageUp") || matchesKey(keyData, Key.left)) {
-			this.scrollBy(-this.viewHeight || -1);
+			this.cursorLine = Math.max(0, this.cursorLine - this.viewHeight);
+			this.scrollOffset = Math.max(0, this.scrollOffset - this.viewHeight);
+			this.tui.requestRender();
 			return;
 		}
 		if (kb.matches(keyData, "tui.select.pageDown") || matchesKey(keyData, Key.right)) {
-			this.scrollBy(this.viewHeight || 1);
+			this.cursorLine = Math.min(Math.max(0, this.renderedLineCount - 1), this.cursorLine + this.viewHeight);
+			this.scrollOffset = Math.min(Math.max(0, this.renderedLineCount - this.viewHeight), this.scrollOffset + this.viewHeight);
+			this.tui.requestRender();
+			return;
+		}
+		if (keyData === "c" || keyData === "C") {
+			this.onAction("close");
+			return;
+		}
+		if (keyData === "d" || keyData === "D") {
+			this.onAction("delete");
 			return;
 		}
 	}
 
 	render(width: number): string[] {
 		const maxHeight = this.getMaxHeight();
-		const headerLines = 3;
-		const footerLines = 3;
-		const borderLines = 2;
+		const headerLines = 3; // title + meta + blank
+		const footerLines = 2; // blank + actions
+		const borderLines = 2; // top + bottom
 		const innerWidth = Math.max(10, width - 2);
 		const contentHeight = Math.max(1, maxHeight - headerLines - footerLines - borderLines);
-
-		const markdownLines = this.markdown.render(innerWidth);
-		this.totalLines = markdownLines.length;
 		this.viewHeight = contentHeight;
-		const maxScroll = Math.max(0, this.totalLines - contentHeight);
-		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
 
-		const visibleLines = markdownLines.slice(this.scrollOffset, this.scrollOffset + contentHeight);
+		const bodyWidth = Math.max(1, innerWidth - 2); // reserve 2 chars for cursor prefix
+		const renderedLines = this.markdown.render(bodyWidth);
+		this.renderedLineCount = renderedLines.length;
+		this.lastRenderedLines = renderedLines;
+		this.cursorLine = Math.min(this.cursorLine, Math.max(0, this.renderedLineCount - 1));
+
+		this.ensureCursorVisible();
+
+		const visibleBody = renderedLines.slice(this.scrollOffset, this.scrollOffset + contentHeight);
+
 		const lines: string[] = [];
-
 		lines.push(this.buildTitleLine(innerWidth));
 		lines.push(this.buildMetaLine(innerWidth));
 		lines.push("");
-
-		for (const line of visibleLines) {
-			lines.push(truncateToWidth(line, innerWidth));
+		for (let i = 0; i < visibleBody.length; i++) {
+			const globalLineIndex = this.scrollOffset + i;
+			const isCursor = globalLineIndex === this.cursorLine;
+			const isSelected = this.selectedLines.has(globalLineIndex);
+			let prefix: string;
+			if (isCursor && isSelected) prefix = "+>";
+			else if (isCursor) prefix = "> ";
+			else if (isSelected) prefix = "+ ";
+			else prefix = "  ";
+			lines.push(prefix + visibleBody[i]);
 		}
 		while (lines.length < headerLines + contentHeight) {
 			lines.push("");
 		}
-
 		lines.push("");
 		lines.push(this.buildActionLine(innerWidth));
 
 		const borderColor = (text: string) => this.theme.fg("borderMuted", text);
 		const top = borderColor(`┌${"─".repeat(innerWidth)}┐`);
 		const bottom = borderColor(`└${"─".repeat(innerWidth)}┘`);
-		const framedLines = lines.map((line) => {
+		const framed = lines.map((line) => {
 			const truncated = truncateToWidth(line, innerWidth);
 			const padding = Math.max(0, innerWidth - visibleWidth(truncated));
 			return borderColor("│") + truncated + " ".repeat(padding) + borderColor("│");
 		});
 
-		return [top, ...framedLines, bottom].map((line) => truncateToWidth(line, width));
+		return [top, ...framed, bottom].map((line) => truncateToWidth(line, width));
 	}
 
 	invalidate(): void {
-		this.markdown = new Markdown(this.getMarkdownText(), 1, 0, getMarkdownTheme());
+		this.markdown = new Markdown(this.getMarkdownText(), 2, 0, getMarkdownTheme());
+	}
+
+	private ensureCursorVisible(): void {
+		if (this.cursorLine < this.scrollOffset) this.scrollOffset = this.cursorLine;
+		if (this.cursorLine >= this.scrollOffset + this.viewHeight) this.scrollOffset = this.cursorLine - this.viewHeight + 1;
+		const maxScroll = Math.max(0, this.renderedLineCount - this.viewHeight);
+		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxScroll));
 	}
 
 	private getMaxHeight(): number {
@@ -687,35 +786,47 @@ class TodoDetailOverlayComponent {
 		const status = this.todo.status || "open";
 		const statusColor = isTodoClosed(status) ? "dim" : "success";
 		const tagText = this.todo.tags.length ? this.todo.tags.join(", ") : "no tags";
+		const selCount = this.selectedLines.size;
+		const meta = this.selectMode
+			? this.theme.fg("warning", `${selCount} selected`)
+			: this.theme.fg("muted", `line ${this.cursorLine + 1}/${this.renderedLineCount || "?"}`);
 		const line =
 			this.theme.fg("accent", formatTodoId(this.todo.id)) +
 			this.theme.fg("muted", " • ") +
 			this.theme.fg(statusColor, status) +
+			this.theme.fg("muted", " • ") +
+			meta +
 			this.theme.fg("muted", " • ") +
 			this.theme.fg("muted", tagText);
 		return truncateToWidth(line, width);
 	}
 
 	private buildActionLine(width: number): string {
-		const work = this.theme.fg("accent", "enter") + this.theme.fg("muted", " work on todo");
-		const back = this.theme.fg("dim", "esc back");
-		const nav = this.theme.fg("dim", "↑/↓: move. ←/→: page.");
-		const pieces = [work, back, nav];
-
+		const closeLabel = isTodoClosed(this.todo.status) ? "reopen" : "close";
+		const pieces = this.selectMode
+			? [
+					this.theme.fg("accent", "s") + this.theme.fg("muted", " toggle"),
+					this.theme.fg("accent", "n") + this.theme.fg("muted", " comment"),
+					this.theme.fg("accent", "v") + this.theme.fg("muted", " done"),
+					this.theme.fg("dim", "↑↓"),
+			  ]
+			: [
+					this.theme.fg("accent", "↵") + this.theme.fg("muted", " work"),
+					this.theme.fg("accent", "r") + this.theme.fg("muted", " refine"),
+					this.theme.fg("accent", "n") + this.theme.fg("muted", " comment"),
+					this.theme.fg("accent", "v") + this.theme.fg("muted", " multi"),
+					this.theme.fg("accent", "c") + this.theme.fg("muted", ` ${closeLabel}`),
+					this.theme.fg("accent", "d") + this.theme.fg("muted", " del"),
+					this.theme.fg("dim", "esc"),
+					this.theme.fg("dim", "↑↓"),
+			  ];
 		let line = pieces.join(this.theme.fg("muted", " • "));
-		if (this.totalLines > this.viewHeight) {
-			const start = Math.min(this.totalLines, this.scrollOffset + 1);
-			const end = Math.min(this.totalLines, this.scrollOffset + this.viewHeight);
-			const scrollInfo = this.theme.fg("dim", ` ${start}-${end}/${this.totalLines}`);
-			line += scrollInfo;
+		if (!this.selectMode && this.renderedLineCount > this.viewHeight) {
+			const start = Math.min(this.renderedLineCount, this.scrollOffset + 1);
+			const end = Math.min(this.renderedLineCount, this.scrollOffset + this.viewHeight);
+			line += this.theme.fg("dim", `  ${start}-${end}/${this.renderedLineCount}`);
 		}
-
 		return truncateToWidth(line, width);
-	}
-
-	private scrollBy(delta: number): void {
-		const maxScroll = Math.max(0, this.totalLines - this.viewHeight);
-		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset + delta, maxScroll));
 	}
 }
 
@@ -1883,23 +1994,29 @@ export default function todosExtension(pi: ExtensionAPI) {
 					return record;
 				};
 
-				const openTodoOverlay = async (record: TodoRecord): Promise<TodoOverlayAction> => {
+				const openTodoOverlay = async (record: TodoRecord): Promise<TodoOverlayResult> => {
+					let componentRef: TodoDetailOverlayComponent | null = null;
 					const action = await ctx.ui.custom<TodoOverlayAction>(
-						(overlayTui, overlayTheme, overlayKeybindings, overlayDone) =>
-							new TodoDetailOverlayComponent(
+						(overlayTui, overlayTheme, overlayKeybindings, overlayDone) => {
+							componentRef = new TodoDetailOverlayComponent(
 								overlayTui,
 								overlayTheme,
 								overlayKeybindings,
 								record,
 								overlayDone,
-							),
+							);
+							return componentRef;
+						},
 						{
 							overlay: true,
 							overlayOptions: { width: "80%", maxHeight: "80%", anchor: "center" },
 						},
 					);
 
-					return action ?? "back";
+					return {
+						action: action ?? "back",
+						comment: componentRef?.comment ?? null,
+					};
 				};
 
 				const applyTodoAction = async (
@@ -1970,32 +2087,78 @@ export default function todosExtension(pi: ExtensionAPI) {
 					return "stay";
 				};
 
-				const handleActionSelection = async (record: TodoRecord, action: TodoMenuAction) => {
-					if (action === "view") {
-						const overlayAction = await openTodoOverlay(record);
-						if (overlayAction === "work") {
-							await applyTodoAction(record, "work");
+				const confirmDelete = (record: TodoRecord) => {
+					const message = `Delete todo ${formatTodoId(record.id)}? This cannot be undone.`;
+					deleteConfirm = new TodoDeleteConfirmComponent(theme, message, (confirmed) => {
+						if (!confirmed) {
+							setActiveComponent(selector);
 							return;
 						}
-						if (actionMenu) {
-							setActiveComponent(actionMenu);
+						void (async () => {
+							const result = await deleteTodo(todosDir, record.id, ctx);
+							if ("error" in result) {
+								ctx.ui.notify(result.error, "error");
+							} else {
+								const updatedTodos = await listTodos(todosDir);
+								selector?.setTodos(updatedTodos);
+								ctx.ui.notify(`Deleted todo ${formatTodoId(record.id)}`, "info");
+							}
+							setActiveComponent(selector);
+						})();
+					});
+					setActiveComponent(deleteConfirm);
+				};
+
+				const handleOverlayResult = async (record: TodoRecord, result: TodoOverlayResult) => {
+					if (result.action === "work") {
+						await applyTodoAction(record, "work");
+						return;
+					}
+					if (result.action === "refine") {
+						await applyTodoAction(record, "refine");
+						return;
+					}
+					if (result.comment) {
+						const quoted = result.comment.text
+							.split("\n")
+							.map((l) => `> ${l}`)
+							.join("\n");
+						nextPrompt = `Comment on this part of todo ${formatTodoId(record.id)} "${record.title || "(untitled)"}":\n${quoted}\n\nMy comment: `;
+						done();
+						return;
+					}
+					if (result.action === "close") {
+						const nextStatus = isTodoClosed(record.status) ? "open" : "closed";
+						const statusResult = await updateTodoStatus(todosDir, record.id, nextStatus, ctx);
+						if ("error" in statusResult) {
+							ctx.ui.notify(statusResult.error, "error");
+						} else {
+							const updatedTodos = await listTodos(todosDir);
+							selector?.setTodos(updatedTodos);
+							ctx.ui.notify(
+								`${nextStatus === "closed" ? "Closed" : "Reopened"} todo ${formatTodoId(record.id)}`,
+								"info",
+							);
 						}
+						setActiveComponent(selector);
+						return;
+					}
+					if (result.action === "delete") {
+						confirmDelete(record);
+						return;
+					}
+					setActiveComponent(selector);
+				};
+
+				const handleActionSelection = async (record: TodoRecord, action: TodoMenuAction) => {
+					if (action === "view") {
+						const result = await openTodoOverlay(record);
+						await handleOverlayResult(record, result);
 						return;
 					}
 
 					if (action === "delete") {
-						const message = `Delete todo ${formatTodoId(record.id)}? This cannot be undone.`;
-						deleteConfirm = new TodoDeleteConfirmComponent(theme, message, (confirmed) => {
-							if (!confirmed) {
-								setActiveComponent(actionMenu);
-								return;
-							}
-							void (async () => {
-								await applyTodoAction(record, "delete");
-								setActiveComponent(selector);
-							})();
-						});
-						setActiveComponent(deleteConfirm);
+						confirmDelete(record);
 						return;
 					}
 
@@ -2021,7 +2184,18 @@ export default function todosExtension(pi: ExtensionAPI) {
 					setActiveComponent(actionMenu);
 				};
 
+				const showDetailOverlay = async (todo: TodoFrontMatter | TodoRecord) => {
+					const record = "body" in todo ? todo : await resolveTodoRecord(todo);
+					if (!record) return;
+					const result = await openTodoOverlay(record);
+					await handleOverlayResult(record, result);
+				};
+
 				const handleSelect = async (todo: TodoFrontMatter) => {
+					await showDetailOverlay(todo);
+				};
+
+				const handleActionMenu = async (todo: TodoFrontMatter) => {
 					await showActionMenu(todo);
 				};
 
@@ -2043,6 +2217,9 @@ export default function todosExtension(pi: ExtensionAPI) {
 								? buildRefinePrompt(todo.id, title)
 								: `work on todo ${formatTodoId(todo.id)} "${title}"`;
 						done();
+					},
+					(todo) => {
+						void handleActionMenu(todo);
 					},
 				);
 
