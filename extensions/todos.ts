@@ -52,6 +52,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@mariozechner/pi-tui";
+import { stripAnsi } from "./lib/utils.js";
 
 const TODO_DIR_NAME = ".pi/todos";
 const TODO_PATH_ENV = "PI_TODO_PATH";
@@ -251,11 +252,6 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 		.map((match) => match.todo);
 }
 
-function stripAnsi(str: string): string {
-	// eslint-disable-next-line no-control-regex
-	return str.replace(/\x1B\[[0-9;]*m/g, "");
-}
-
 class TodoSelectorComponent extends Container implements Focusable {
 	private searchInput: Input;
 	private listContainer: Container;
@@ -356,7 +352,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 		this.hintText.setText(
 			this.theme.fg(
 				"dim",
-				"Type to search • ↑↓ select • Enter view • a actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
+				"Type to search • ↑↓ select • Enter view • Ctrl+A actions • Ctrl+Shift+W work • Ctrl+Shift+R refine • Esc close",
 			),
 		);
 	}
@@ -446,7 +442,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 			if (selected && this.onQuickAction) this.onQuickAction(selected, "work");
 			return;
 		}
-		if (keyData === "a" || keyData === "A") {
+		if (matchesKey(keyData, Key.ctrl("a"))) {
 			const selected = this.filteredTodos[this.selectedIndex];
 			if (selected && this.onActionMenu) this.onActionMenu(selected);
 			return;
@@ -2087,24 +2083,16 @@ export default function todosExtension(pi: ExtensionAPI) {
 					return "stay";
 				};
 
-				const confirmDelete = (record: TodoRecord) => {
+				const confirmDelete = (record: TodoRecord, onCancelReturnTo?: () => void) => {
 					const message = `Delete todo ${formatTodoId(record.id)}? This cannot be undone.`;
-					deleteConfirm = new TodoDeleteConfirmComponent(theme, message, (confirmed) => {
+					deleteConfirm = new TodoDeleteConfirmComponent(theme, message, async (confirmed) => {
 						if (!confirmed) {
-							setActiveComponent(selector);
+							if (onCancelReturnTo) onCancelReturnTo();
+							else setActiveComponent(selector);
 							return;
 						}
-						void (async () => {
-							const result = await deleteTodo(todosDir, record.id, ctx);
-							if ("error" in result) {
-								ctx.ui.notify(result.error, "error");
-							} else {
-								const updatedTodos = await listTodos(todosDir);
-								selector?.setTodos(updatedTodos);
-								ctx.ui.notify(`Deleted todo ${formatTodoId(record.id)}`, "info");
-							}
-							setActiveComponent(selector);
-						})();
+						await applyTodoAction(record, "delete");
+						setActiveComponent(selector);
 					});
 					setActiveComponent(deleteConfirm);
 				};
@@ -2158,7 +2146,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					}
 
 					if (action === "delete") {
-						confirmDelete(record);
+						confirmDelete(record, () => setActiveComponent(actionMenu));
 						return;
 					}
 

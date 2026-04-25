@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { stripAnsi } from "./lib/utils.js";
 
 // =============================================================================
 // Modes
@@ -966,7 +967,6 @@ class PromptEditor extends CustomEditor {
 		const mode = this.modeLabelProvider?.();
 		if (!mode) return lines;
 
-		const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 		const topPlain = stripAnsi(lines[0] ?? "");
 
 		// If the editor is scrolled, the built-in editor renders a scroll indicator on the top border.
