@@ -13,6 +13,7 @@ import {
 	type ExtensionContext,
 	type ResourceLoader,
 } from "@mariozechner/pi-coding-agent";
+import { stripAnsi } from "./lib/utils.js";
 import { type AssistantMessage, type Message, type ThinkingLevel as AiThinkingLevel } from "@mariozechner/pi-ai";
 import {
 	Container,
@@ -187,11 +188,6 @@ function formatThread(thread: BtwDetails[]): string {
 		.join("\n\n---\n\n");
 }
 
-function stripAnsi(str: string): string {
-	// eslint-disable-next-line no-control-regex
-	return str.replace(/\x1B\[[0-9;]*m/g, "");
-}
-
 function notify(ctx: ExtensionContext | ExtensionCommandContext, message: string, level: "info" | "warning" | "error"): void {
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, level);
@@ -264,7 +260,7 @@ class BtwOverlay extends Container implements Focusable {
 	handleInput(data: string): void {
 		const kb = this.keybindings;
 
-		if (kb.matches(data, "selectCancel")) {
+		if (kb.matches(data, "tui.select.cancel")) {
 			if (this.selectMode) {
 				this.selectMode = false;
 				this.selectedLines.clear();
@@ -517,6 +513,22 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	const MAX_MD_CACHE_SIZE = 200;
+	const markdownCache = new Map<string, string[]>();
+
+	function getCachedMarkdownLines(text: string, width: number): string[] {
+		const key = `${width}::${text}`;
+		const cached = markdownCache.get(key);
+		if (cached) return cached;
+		const lines = renderMarkdownLines(text, width);
+		if (markdownCache.size >= MAX_MD_CACHE_SIZE) {
+			const firstKey = markdownCache.keys().next().value;
+			if (firstKey) markdownCache.delete(firstKey);
+		}
+		markdownCache.set(key, lines);
+		return lines;
+	}
+
 	function formatToolArgs(toolName: string, args: unknown): string {
 		if (!args || typeof args !== "object") return "";
 		const a = args as Record<string, unknown>;
@@ -566,8 +578,8 @@ export default function (pi: ExtensionAPI) {
 			lines.push(theme.fg("accent", theme.bold("You: ")) + truncateToWidth(userText, width - 5, "…"));
 			lines.push("");
 
-			// Assistant message rendered as markdown
-			const mdLines = renderMarkdownLines(item.answer, width);
+			// Assistant message rendered as markdown (cached for completed entries)
+			const mdLines = getCachedMarkdownLines(item.answer, width);
 			lines.push(...mdLines);
 
 			// Model & token info
@@ -918,7 +930,12 @@ export default function (pi: ExtensionAPI) {
 					overlayRuntime = null;
 				}
 				if (nextPrompt && ctx.hasUI) {
-					ctx.ui.setEditorText(nextPrompt);
+					const existing = ctx.ui.getEditorText();
+					const combined =
+						existing.length > 0
+							? `${existing}${existing.endsWith("\n") ? "\n" : "\n\n"}${nextPrompt}`
+							: nextPrompt;
+					ctx.ui.setEditorText(combined);
 					rootTui?.requestRender();
 				}
 			})
@@ -1097,6 +1114,10 @@ export default function (pi: ExtensionAPI) {
 		// Retry last failed question on empty submit
 		if (!question) {
 			if (pendingError && pendingQuestion) {
+				if (!("waitForIdle" in ctx)) {
+					setOverlayStatus("BTW retry requires command context. Re-open with /btw.");
+					return;
+				}
 				pendingError = null;
 				setOverlayDraft("");
 				await runBtwPrompt(ctx, pendingQuestion);
