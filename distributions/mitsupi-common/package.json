@@ -18,7 +18,6 @@
     "extensions": [
       "../../extensions/answer.ts",
       "../../extensions/btw.ts",
-      "../../extensions/context.ts",
       "../../extensions/control.ts",
       "../../extensions/files.ts",
       "../../extensions/loop.ts",
@@ -31,7 +30,6 @@
       "../../extensions/whimsical.ts",
       "node_modules/mitsupi/extensions/answer.ts",
       "node_modules/mitsupi/extensions/btw.ts",
-      "node_modules/mitsupi/extensions/context.ts",
       "node_modules/mitsupi/extensions/control.ts",
       "node_modules/mitsupi/extensions/files.ts",
       "node_modules/mitsupi/extensions/loop.ts",
