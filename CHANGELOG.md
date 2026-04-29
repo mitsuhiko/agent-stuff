@@ -43,7 +43,6 @@ All notable changes to agent-stuff are documented here.
 * Added `/session-breakdown` command with interactive TUI showing sessions, messages, tokens, and cost over the last 7/30/90 days with a GitHub-style contribution calendar.
 * Added messages/tokens tracking and large-count abbreviations to `/session-breakdown`.
 * Added progress reporting while analyzing sessions in `/session-breakdown`.
-* Added `/context` command for viewing context overview.
 * Added folder snapshot review mode to `/review`.
 * Improved review rubric with lessons from codex.
 * Added a `summarize` skill for converting files/URLs to Markdown via `markitdown`.

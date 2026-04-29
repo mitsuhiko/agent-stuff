@@ -34,7 +34,6 @@ Custom extensions for Pi Coding Agent are in [`extensions`](extensions):
 
 * [`answer.ts`](extensions/answer.ts) - Interactive TUI for answering questions one by one.
 * [`btw.ts`](extensions/btw.ts) - Simple `/btw` side-chat popover with optional summary injection back into the main chat on close.
-* [`context.ts`](extensions/context.ts) - Context breakdown (extensions, skills, AGENTS.md/CLAUDE.md) + token usage, including loaded-skill highlighting.
 * [`control.ts`](extensions/control.ts) - Session control helpers (list controllable sessions, etc.).
 * [`files.ts`](extensions/files.ts) - Unified file browser with git status + session references and reveal/open/edit/diff actions.
 * [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork` command to branch the current session into a new pi process in a right-hand Ghostty split.
