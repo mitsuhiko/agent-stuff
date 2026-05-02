@@ -95,7 +95,6 @@ function createBtwResourceLoader(ctx: ExtensionContext, appendSystemPrompt: stri
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => systemPrompt,
 		getAppendSystemPrompt: () => appendSystemPrompt,
-		getPathMetadata: () => new Map(),
 		extendResources: () => {},
 		reload: async () => {},
 	};
@@ -740,9 +739,9 @@ export default function (pi: ExtensionAPI) {
 			throw new Error("No active model selected.");
 		}
 
-		const apiKey = await ctx.modelRegistry.getApiKey(model);
-		if (!apiKey) {
-			throw new Error(`No credentials available for ${model.provider}/${model.id}.`);
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			throw new Error(auth.error);
 		}
 
 		const { session } = await createAgentSession({
@@ -825,9 +824,9 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const apiKey = await ctx.modelRegistry.getApiKey(model);
-		if (!apiKey) {
-			const message = `No credentials available for ${model.provider}/${model.id}.`;
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok) {
+			const message = auth.error;
 			setOverlayStatus(message);
 			notify(ctx, message, "error");
 			return;

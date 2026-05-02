@@ -9,6 +9,7 @@ const {
   formatScopes,
   getGoogleApis,
   loadToken,
+  normalizeEmail,
   resolveAuthMode,
 } = require('./common');
 
@@ -16,10 +17,10 @@ function printHelp() {
   console.log(`Google Workspace API helper (exec-only)
 
 Usage:
-  node scripts/workspace.js exec [--script 'return 1'] [--timeout 30000] [--scopes s1,s2]
+  node scripts/workspace.js exec --email user@example.com [--script 'return 1'] [--timeout 30000] [--scopes s1,s2]
 
 Example:
-  node scripts/workspace.js exec <<'JS'
+  node scripts/workspace.js exec --email user@example.com <<'JS'
   const me = await workspace.whoAmI();
   const files = await workspace.call('drive', 'files.list', {
     pageSize: 3,
@@ -46,6 +47,7 @@ function parseTimeout(raw) {
 function parseOptions(argv) {
   const positional = [];
   const options = {
+    email: undefined,
     scopes: undefined,
     timeout: undefined,
     script: undefined,
@@ -53,6 +55,16 @@ function parseOptions(argv) {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+
+    if (arg === '--email') {
+      const value = argv[i + 1];
+      if (!value) {
+        throw new Error('--email requires a value');
+      }
+      options.email = normalizeEmail(value);
+      i += 1;
+      continue;
+    }
 
     if (arg === '--scopes') {
       const value = argv[i + 1];
@@ -119,6 +131,7 @@ async function callApi({
   version,
   scopes,
   authClient,
+  email,
 }) {
   const google = getGoogleApis();
   const factory = google[service];
@@ -129,6 +142,7 @@ async function callApi({
   const auth =
     authClient ||
     (await authorize({
+      email,
       interactive: true,
       scopes: scopes && scopes.length > 0 ? scopes : undefined,
     }));
@@ -155,8 +169,9 @@ function getServiceClient({ google, auth, service, version }) {
   });
 }
 
-function createWorkspaceHelper({ auth, google }) {
+function createWorkspaceHelper({ auth, google, email }) {
   return {
+    accountEmail: email,
     versions: { ...DEFAULT_VERSIONS },
 
     async call(service, methodPath, params = {}, options = {}) {
@@ -166,6 +181,7 @@ function createWorkspaceHelper({ auth, google }) {
         params,
         version: options.version,
         authClient: auth,
+        email,
       });
     },
 
@@ -302,20 +318,51 @@ function readStdinText() {
   });
 }
 
-function errorPayload(error, logs, timeoutMs) {
+function createUnauthorizedHint(message, email) {
+  const msg = String(message || '').toLowerCase();
+  const looksUnauthorized =
+    msg.includes('401') ||
+    msg.includes('unauthorized') ||
+    msg.includes('invalid credentials') ||
+    msg.includes('insufficient permissions') ||
+    msg.includes('forbidden');
+
+  if (!looksUnauthorized) {
+    return null;
+  }
+
+  return [
+    `Auth/account hint: this request may not be authorized for ${email}.`,
+    'List known accounts with: node scripts/auth.js accounts',
+    `Sign in or refresh this account with: node scripts/auth.js login --email ${email}`,
+    'Then retry workspace.js exec with the intended --email.',
+  ].join(' ');
+}
+
+function errorPayload(error, logs, timeoutMs, email) {
+  const baseMessage = error?.message || String(error);
+  const hint = createUnauthorizedHint(baseMessage, email);
+
   return {
     ok: false,
     timeoutMs,
     logs,
     error: {
       name: error?.name || 'Error',
-      message: error?.message || String(error),
+      message: hint ? `${baseMessage}\n${hint}` : baseMessage,
       stack: error?.stack || null,
     },
   };
 }
 
 async function cmdExec(args, options) {
+  if (!options.email) {
+    throw new Error(
+      'Missing required --email <account@example.com>. ' +
+        'Use node scripts/auth.js accounts to list known accounts.',
+    );
+  }
+
   let script = options.script;
 
   if (!script && args.length > 0) {
@@ -330,7 +377,7 @@ async function cmdExec(args, options) {
 
   if (!script) {
     throw new Error(
-      'Usage: exec [--script "..."] (or pipe script via stdin / heredoc)',
+      'Usage: exec --email user@example.com [--script "..."] (or pipe script via stdin / heredoc)',
     );
   }
 
@@ -339,6 +386,7 @@ async function cmdExec(args, options) {
 
   try {
     const auth = await authorize({
+      email: options.email,
       interactive: true,
       scopes: options.scopes && options.scopes.length > 0
         ? options.scopes
@@ -346,7 +394,7 @@ async function cmdExec(args, options) {
     });
 
     const google = getGoogleApis();
-    const workspace = createWorkspaceHelper({ auth, google });
+    const workspace = createWorkspaceHelper({ auth, google, email: options.email });
 
     const context = vm.createContext({
       Buffer,
@@ -381,12 +429,13 @@ ${script}
     );
 
     const result = await withTimeout(resultPromise, timeoutMs);
-    const token = loadToken();
+    const token = loadToken(options.email);
 
     console.log(
       JSON.stringify(
         {
           ok: true,
+          email: options.email,
           authMode: resolveAuthMode(token),
           timeoutMs,
           logs,
@@ -397,7 +446,13 @@ ${script}
       ),
     );
   } catch (error) {
-    console.log(JSON.stringify(errorPayload(error, logs, timeoutMs), null, 2));
+    console.log(
+      JSON.stringify(
+        errorPayload(error, logs, timeoutMs, options.email),
+        null,
+        2,
+      ),
+    );
     process.exitCode = 1;
   }
 }

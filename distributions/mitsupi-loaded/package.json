@@ -1,0 +1,38 @@
+{
+  "name": "mitsupi-loaded",
+  "version": "1.5.0",
+  "description": "Add-on Mitsupi package with travel and CAD extras",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mitsuhiko/agent-stuff.git",
+    "directory": "distributions/mitsupi-loaded"
+  },
+  "readme": "README.md",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill"
+  ],
+  "pi": {
+    "extensions": [
+      "../../extensions/go-to-bed.ts",
+      "node_modules/mitsupi/extensions/go-to-bed.ts"
+    ],
+    "skills": [
+      "../../skills/anachb",
+      "../../skills/apple-mail",
+      "../../skills/oebb-scotty",
+      "../../skills/openscad",
+      "node_modules/mitsupi/skills/anachb",
+      "node_modules/mitsupi/skills/apple-mail",
+      "node_modules/mitsupi/skills/oebb-scotty",
+      "node_modules/mitsupi/skills/openscad"
+    ]
+  },
+  "dependencies": {
+    "mitsupi": "^1.5.0"
+  },
+  "bundledDependencies": [
+    "mitsupi"
+  ]
+}

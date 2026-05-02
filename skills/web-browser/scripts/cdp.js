@@ -4,12 +4,16 @@
 
 import WebSocket from "ws";
 
+const DEBUG_HOST = process.env.BROWSER_DEBUG_HOST || "localhost";
+const DEBUG_PORT = Number(process.env.BROWSER_DEBUG_PORT || 9222);
+const DEBUG_HTTP_URL = `http://${DEBUG_HOST}:${DEBUG_PORT}`;
+
 export async function connect(timeout = 5000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const resp = await fetch("http://localhost:9222/json/version", {
+    const resp = await fetch(`${DEBUG_HTTP_URL}/json/version`, {
       signal: controller.signal,
     });
     const { webSocketDebuggerUrl } = await resp.json();
@@ -34,7 +38,9 @@ export async function connect(timeout = 5000) {
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === "AbortError") {
-      throw new Error("Connection timeout - is Chrome running with --remote-debugging-port=9222?");
+      throw new Error(
+        `Connection timeout - is Chrome running with --remote-debugging-port=${DEBUG_PORT}?`,
+      );
     }
     throw e;
   }

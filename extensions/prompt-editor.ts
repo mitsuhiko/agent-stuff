@@ -334,8 +334,7 @@ function orderedModeNames(modes: Record<string, ModeSpec>): string[] {
 	return Object.keys(modes).filter((name) => name !== CUSTOM_MODE_NAME);
 }
 
-function getModeBorderColor(ctx: ExtensionContext, pi: ExtensionAPI, mode: string): (text: string) => string {
-	const theme = ctx.ui.theme;
+function getModeBorderColor(theme: any, pi: ExtensionAPI, mode: string): (text: string) => string {
 	const spec = runtime.data.modes[mode];
 
 	// Explicit color override in JSON.
@@ -350,7 +349,11 @@ function getModeBorderColor(ctx: ExtensionContext, pi: ExtensionAPI, mode: strin
 	}
 
 	// Default: derive from the current thinking level.
-	return theme.getThinkingBorderColor(pi.getThinkingLevel());
+	try {
+		return theme.getThinkingBorderColor(pi.getThinkingLevel());
+	} catch {
+		return theme.getThinkingBorderColor("off");
+	}
 }
 
 function formatModeLabel(mode: string): string {
@@ -1143,18 +1146,19 @@ function historiesMatch(a: PromptEntry[], b: PromptEntry[]): boolean {
 }
 
 function setEditor(pi: ExtensionAPI, ctx: ExtensionContext, history: PromptEntry[]) {
+	const uiTheme = ctx.ui.theme;
 	ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 		const editor = new PromptEditor(tui, theme, keybindings);
 		requestEditorRender = () => editor.requestRenderNow();
 		editor.modeLabelProvider = () => runtime.currentMode;
 		// Keep the mode label color stable (match footer/status bar).
-		editor.modeLabelColor = (text: string) => ctx.ui.theme.fg("dim", text);
+		editor.modeLabelColor = (text: string) => uiTheme.fg("dim", text);
 		const borderColor = (text: string) => {
 			const isBashMode = editor.getText().trimStart().startsWith("!");
 			if (isBashMode) {
-				return ctx.ui.theme.getBashModeBorderColor()(text);
+				return uiTheme.getBashModeBorderColor()(text);
 			}
-			return getModeBorderColor(ctx, pi, runtime.currentMode)(text);
+			return getModeBorderColor(uiTheme, pi, runtime.currentMode)(text);
 		};
 
 		editor.borderColor = borderColor;
