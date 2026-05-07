@@ -44,6 +44,6 @@ The script instructs the model to:
 ## Notes
 
 - No extra npm install is required.
-- If module resolution fails, set `PI_AI_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/index.js` path.
-- If OAuth helper resolution fails, set `PI_AI_OAUTH_MODULE_PATH` to `@mariozechner/pi-ai`'s `dist/oauth.js` path.
+- If module resolution fails, set `PI_AI_MODULE_PATH` to `@earendil-works/pi-ai`'s `dist/index.js` path.
+- If OAuth helper resolution fails, set `PI_AI_OAUTH_MODULE_PATH` to `@earendil-works/pi-ai`'s `dist/oauth.js` path.
 - For OAuth providers, the script can fall back to a still-valid cached `access` token from `~/.pi/agent/auth.json`.

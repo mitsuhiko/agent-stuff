@@ -175,7 +175,7 @@ function collectModuleCandidates(fileName = "index.js", envVarName = "PI_AI_MODU
 	for (const start of [cwd, scriptDir]) {
 		let dir = start;
 		for (let i = 0; i < 8; i++) {
-			add(join(dir, "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(dir, "node_modules", "@earendil-works", "pi-ai", "dist", fileName));
 			add(join(dir, "packages", "ai", "dist", fileName));
 			add(join(dir, "ai", "dist", fileName));
 			const parent = dirname(dir);
@@ -191,8 +191,8 @@ function collectModuleCandidates(fileName = "index.js", envVarName = "PI_AI_MODU
 			const piDir = dirname(piReal);
 			add(join(piDir, "..", "..", "ai", "dist", fileName));
 			add(join(piDir, "..", "..", "pi-ai", "dist", fileName));
-			add(join(piDir, "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
-			add(join(piDir, "..", "..", "node_modules", "@mariozechner", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "node_modules", "@earendil-works", "pi-ai", "dist", fileName));
+			add(join(piDir, "..", "..", "node_modules", "@earendil-works", "pi-ai", "dist", fileName));
 		} catch {
 			// ignore
 		}
@@ -207,9 +207,9 @@ async function loadPiAi() {
 	const tried = [];
 
 	try {
-		return await import("@mariozechner/pi-ai");
+		return await import("@earendil-works/pi-ai");
 	} catch (err) {
-		tried.push(`@mariozechner/pi-ai (${err?.code || err?.message || "not found"})`);
+		tried.push(`@earendil-works/pi-ai (${err?.code || err?.message || "not found"})`);
 	}
 
 	for (const candidate of collectModuleCandidates("index.js", "PI_AI_MODULE_PATH")) {
@@ -222,7 +222,7 @@ async function loadPiAi() {
 	}
 
 	throw new Error(
-		`Could not load @mariozechner/pi-ai. Set PI_AI_MODULE_PATH to its dist/index.js.\nTried:\n- ${tried.join("\n- ")}`,
+		`Could not load @earendil-works/pi-ai. Set PI_AI_MODULE_PATH to its dist/index.js.\nTried:\n- ${tried.join("\n- ")}`,
 	);
 }
 
@@ -234,13 +234,13 @@ async function loadPiAiOAuth(piAi) {
 	const tried = [];
 
 	try {
-		const oauth = await import("@mariozechner/pi-ai/oauth");
+		const oauth = await import("@earendil-works/pi-ai/oauth");
 		if (typeof oauth.getOAuthApiKey === "function") {
 			return { getOAuthApiKey: oauth.getOAuthApiKey.bind(oauth) };
 		}
-		tried.push("@mariozechner/pi-ai/oauth (missing getOAuthApiKey export)");
+		tried.push("@earendil-works/pi-ai/oauth (missing getOAuthApiKey export)");
 	} catch (err) {
-		tried.push(`@mariozechner/pi-ai/oauth (${err?.code || err?.message || "not found"})`);
+		tried.push(`@earendil-works/pi-ai/oauth (${err?.code || err?.message || "not found"})`);
 	}
 
 	for (const candidate of collectModuleCandidates("oauth.js", "PI_AI_OAUTH_MODULE_PATH")) {

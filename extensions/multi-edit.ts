@@ -13,8 +13,8 @@
  * - patch mode: preflight by applying patch operations on a virtual filesystem
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import * as Diff from "diff";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, unlink as fsUnlink, writeFile as fsWriteFile } from "fs/promises";

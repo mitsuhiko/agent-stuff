@@ -48,12 +48,12 @@ import type {
 	TurnEndEvent,
 	MessageRenderer,
 	ModelRegistry,
-} from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { complete, type Model, type Api, type UserMessage, type TextContent } from "@mariozechner/pi-ai";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+} from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { complete, type Model, type Api, type UserMessage, type TextContent } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { promises as fs } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -439,7 +439,8 @@ function getLastAssistantMessage(ctx: ExtensionContext): ExtractedMessage | unde
 		if (entry.type === "message") {
 			const msg = entry.message;
 			if ("role" in msg && msg.role === "assistant") {
-				const textParts = msg.content
+				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }];
+				const textParts = content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text);
 				if (textParts.length > 0) {
@@ -475,7 +476,8 @@ function getMessagesSinceLastPrompt(ctx: ExtensionContext): ExtractedMessage[] {
 		if (entry.type === "message") {
 			const msg = entry.message;
 			if ("role" in msg && (msg.role === "user" || msg.role === "assistant")) {
-				const textParts = msg.content
+				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }];
+				const textParts = content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text);
 				if (textParts.length > 0) {
@@ -661,7 +663,7 @@ async function handleCommand(
 		}
 
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
+		if (auth.ok === false) {
 			respond(false, "get_summary", undefined, auth.error);
 			return;
 		}
@@ -767,7 +769,8 @@ async function handleCommand(
 		return;
 	}
 
-	respond(false, command.type, undefined, `Unsupported command: ${command.type}`);
+	const unsupportedType = (command as { type: string }).type;
+	respond(false, unsupportedType, undefined, `Unsupported command: ${unsupportedType}`);
 }
 
 // ============================================================================
@@ -1057,14 +1060,6 @@ export default function (pi: ExtensionAPI) {
 			cliSendHandled = true;
 			await maybeHandleStartupControlSend(pi, ctx);
 		}
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		await refreshServer(ctx);
-	});
-
-	pi.on("session_fork", async (_event, ctx) => {
-		await refreshServer(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -1410,7 +1405,7 @@ Messages automatically include sender session info for replies. When you want a 
 
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as Record<string, unknown> | undefined;
-			const isError = result.isError === true;
+			const isError = (result as { isError?: boolean }).isError === true;
 
 			// Error case
 			if (isError || details?.error) {

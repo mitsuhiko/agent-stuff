@@ -15,17 +15,16 @@
  * - Brightness: selected metric per day (log-scaled)
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { BorderedLoader } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import {
 	Key,
 	matchesKey,
-	sliceByColumn,
 	type Component,
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -37,6 +36,52 @@ type CwdKey = string; // normalized cwd path
 type DowKey = string; // "Mon", "Tue", etc.
 type TodKey = string; // "after-midnight", "morning", "afternoon", "evening", "night"
 type BreakdownView = "model" | "cwd" | "dow" | "tod";
+
+function sliceByColumn(line: string, startCol: number, length: number, strict = false): string {
+	if (length <= 0) return "";
+	const endCol = startCol + length;
+	const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+	let result = "";
+	let currentCol = 0;
+	let i = 0;
+	let pendingAnsi = "";
+
+	while (i < line.length) {
+		if (line[i] === "\x1b") {
+			const match = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*(?:\x1b\\)|[@-_])/.exec(line.slice(i));
+			if (match) {
+				if (currentCol >= startCol && currentCol < endCol) {
+					result += match[0];
+				} else if (currentCol < startCol) {
+					pendingAnsi += match[0];
+				}
+				i += match[0].length;
+				continue;
+			}
+		}
+
+		const nextAnsi = line.indexOf("\x1b", i);
+		const textEnd = nextAnsi === -1 ? line.length : nextAnsi;
+		for (const { segment } of segmenter.segment(line.slice(i, textEnd))) {
+			const w = visibleWidth(segment);
+			const inRange = currentCol >= startCol && currentCol < endCol;
+			const fits = !strict || currentCol + w <= endCol;
+			if (inRange && fits) {
+				if (pendingAnsi) {
+					result += pendingAnsi;
+					pendingAnsi = "";
+				}
+				result += segment;
+			}
+			currentCol += w;
+			if (currentCol >= endCol) break;
+		}
+		i = textEnd;
+		if (currentCol >= endCol) break;
+	}
+
+	return result;
+}
 
 const DOW_NAMES: DowKey[] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 

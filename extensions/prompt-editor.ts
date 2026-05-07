@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionContext, ModelSelectEvent, ThinkingLevel } from "@mariozechner/pi-coding-agent";
-import { CustomEditor, ModelSelectorComponent, SettingsManager } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, ModelSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
@@ -10,6 +10,7 @@ import type { Dirent } from "node:fs";
 // =============================================================================
 
 type ModeName = string;
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 type ModeSpec = {
 	provider?: string;
@@ -231,7 +232,7 @@ function applyModesPatch(target: ModesFile, patch: ModesPatch): void {
 			continue;
 		}
 
-		const targetSpec: Record<string, unknown> = ((target.modes[mode] ??= {}) as any) ?? {};
+		const targetSpec: Record<string, unknown> = (target.modes[mode] ??= {}) as Record<string, unknown>;
 		for (const [k, v] of Object.entries(specPatch)) {
 			if (v === null || v === undefined) {
 				delete targetSpec[k];
@@ -1271,25 +1272,7 @@ export default function (pi: ExtensionAPI) {
 		applyEditor(pi, ctx);
 	});
 
-	pi.on("session_switch", async (_event, ctx) => {
-		lastObservedModel = { provider: ctx.model?.provider, modelId: ctx.model?.id };
-		await ensureRuntime(pi, ctx);
-		customOverlay = null;
-
-		const inferred = inferModeFromSelection(ctx, pi, runtime.data);
-		if (inferred) {
-			runtime.currentMode = inferred;
-			runtime.lastRealMode = inferred;
-		} else {
-			runtime.currentMode = CUSTOM_MODE_NAME;
-			customOverlay = getCurrentSelectionSpec(pi, ctx);
-		}
-
-		applyEditor(pi, ctx);
-	});
-
-
-	pi.on("model_select", async (event: ModelSelectEvent, ctx) => {
+	pi.on("model_select", async (event, ctx) => {
 		// Always track the last observed model for overlay/store correctness.
 		lastObservedModel = { provider: event.model.provider, modelId: event.model.id };
 
