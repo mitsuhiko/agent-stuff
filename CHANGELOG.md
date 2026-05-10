@@ -4,6 +4,30 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+## 1.6.0
+
+* Added a redesigned `btw` extension with side chat markdown rendering, tool visibility, deferred session creation, and main-context improvements.
+* Added a `/split-fork` Ghostty fork command for opening split sessions.
+* Added email-based multi-account authentication to the `google-workspace` skill.
+* Added left/right arrow key paging in the todo detail overlay. (#15)
+* Added a shared custom instructions toggle to review workflows.
+* Updated extensions for the new command and API-key APIs, including namespaced keybindings and `sourceInfo` support.
+* Improved the `multi-edit` extension with sequential same-file ordering, redundant-edit skipping, and clearer patch-mode diff output.
+* Fixed the `web-browser` skill and session-control refresh behavior after forks. (#16)
+* Fixed `intercepted-commands/python` and `intercepted-commands/python3` to avoid recursive `uv` spawn loops by resolving a uv-managed non-shim interpreter for `uv run --python`.
+
+## 1.5.0
+
+* Added a `multi-edit` extension that replaces `edit` with support for batched `multi` edits and Codex-style `patch` payloads.
+* Added preflight validation before mutating files for both `multi` edits and `patch` operations in `multi-edit`.
+* Added `/session-breakdown` views for cwd, day-of-week, and time-of-day breakdowns.
+* Added `pi-share` support for `pi.dev` URLs and `#session_id` inputs.
+* Improved day rendering in `/session-breakdown`.
+* Fixed PDF handling in the `summarize` skill.
+* Hardened `uv` command handling by blocking pip/poetry bypasses.
+* Fixed `web-browser` startup behavior to avoid killing user Chrome instances.
+* Updated README extension docs to include `pi-extensions/multi-edit.ts`.
+
 ## 1.4.0
 
 * Added a prompt editor extension for managing prompt modes (create, rename, delete, and edit), with persistence and detection fixes.
@@ -19,7 +43,6 @@ All notable changes to agent-stuff are documented here.
 * Added `/session-breakdown` command with interactive TUI showing sessions, messages, tokens, and cost over the last 7/30/90 days with a GitHub-style contribution calendar.
 * Added messages/tokens tracking and large-count abbreviations to `/session-breakdown`.
 * Added progress reporting while analyzing sessions in `/session-breakdown`.
-* Added `/context` command for viewing context overview.
 * Added folder snapshot review mode to `/review`.
 * Improved review rubric with lessons from codex.
 * Added a `summarize` skill for converting files/URLs to Markdown via `markitdown`.

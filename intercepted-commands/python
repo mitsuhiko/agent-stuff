@@ -60,5 +60,45 @@ for arg in "$@"; do
     prev="$arg"
 done
 
-# Dispatch to uv run python
-exec uv run python "$@"
+# Resolve a Python interpreter for uv. Prefer uv-managed Python to match
+# `uv run python` defaults, while still avoiding shim recursion.
+resolve_uv_python() {
+    local shim_dir candidate candidate_dir
+    shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    candidate="$(uv python find --managed-python 2>/dev/null || true)"
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
+        if [ "$candidate_dir" != "$shim_dir" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    fi
+
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
+        [ "$candidate_dir" = "$shim_dir" ] && continue
+        echo "$candidate"
+        return 0
+    done < <(type -aP python3 2>/dev/null)
+
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        candidate_dir="$(cd "$(dirname "$candidate")" && pwd)"
+        [ "$candidate_dir" = "$shim_dir" ] && continue
+        echo "$candidate"
+        return 0
+    done < <(type -aP python 2>/dev/null)
+
+    return 1
+}
+
+UV_PYTHON="$(resolve_uv_python)"
+if [ -z "$UV_PYTHON" ]; then
+    echo "Error: Unable to locate a Python interpreter outside intercepted-commands." >&2
+    exit 1
+fi
+
+# Dispatch through uv with an explicit interpreter path to avoid recursion.
+exec uv run --python "$UV_PYTHON" python "$@"

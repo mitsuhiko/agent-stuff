@@ -8,8 +8,8 @@
  * Not supported: Kitty (uses OSC 99), Terminal.app, Windows Terminal, Alacritty
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Markdown, type MarkdownTheme } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 
 /**
  * Send a desktop notification via OSC 777 escape sequence.

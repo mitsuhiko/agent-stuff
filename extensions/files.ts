@@ -19,12 +19,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import {
 	Container,
 	fuzzyFilter,
-	getEditorKeybindings,
 	Input,
 	matchesKey,
 	type SelectItem,
@@ -32,7 +31,7 @@ import {
 	Spacer,
 	Text,
 	type TUI,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 type ContentBlock = {
 	type?: string;
@@ -160,7 +159,7 @@ const extractFileReferencesFromContent = (content: unknown): string[] => {
 
 const extractFileReferencesFromEntry = (entry: SessionEntry): string[] => {
 	if (entry.type === "message") {
-		return extractFileReferencesFromContent(entry.message.content);
+		return "content" in entry.message ? extractFileReferencesFromContent(entry.message.content) : [];
 	}
 
 	if (entry.type === "custom_message") {
@@ -856,7 +855,7 @@ const showFileSelector = async (
 	});
 
 	let quickAction: "diff" | null = null;
-	const selection = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+	const selection = await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 		container.addChild(new Text(theme.fg("accent", theme.bold(" Select file")), 0, 0));
@@ -937,16 +936,15 @@ const showFileSelector = async (
 					}
 				}
 
-				const kb = getEditorKeybindings();
 				if (
-					kb.matches(data, "selectUp") ||
-					kb.matches(data, "selectDown") ||
-					kb.matches(data, "selectConfirm") ||
-					kb.matches(data, "selectCancel")
+					keybindings.matches(data, "tui.select.up") ||
+					keybindings.matches(data, "tui.select.down") ||
+					keybindings.matches(data, "tui.select.confirm") ||
+					keybindings.matches(data, "tui.select.cancel")
 				) {
 					if (selectList) {
 						selectList.handleInput(data);
-					} else if (kb.matches(data, "selectCancel")) {
+					} else if (keybindings.matches(data, "tui.select.cancel")) {
 						done(null);
 					}
 					tui.requestRender();

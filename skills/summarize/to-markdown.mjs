@@ -132,7 +132,9 @@ for (let i = 0; i < argv.length; i++) {
 if (!input) usageAndExit(1);
 
 function runMarkitdown(arg) {
-  const result = spawnSync('uvx', ['markitdown', arg], {
+  // Include PDF support by default because many document URLs (for example arXiv PDFs)
+  // are detected as PDFs only after fetching, so extension-based switching is unreliable.
+  const result = spawnSync('uvx', ['--from', 'markitdown[pdf]', 'markitdown', arg], {
     encoding: 'utf-8',
     maxBuffer: 50 * 1024 * 1024
   });

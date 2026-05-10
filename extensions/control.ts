@@ -42,12 +42,18 @@
  *   Events are JSON objects with { type: "event", event, data?, subscriptionId? }
  */
 
-import type { ExtensionAPI, ExtensionContext, TurnEndEvent, MessageRenderer } from "@mariozechner/pi-coding-agent";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { complete, type Model, type Api, type UserMessage, type TextContent } from "@mariozechner/pi-ai";
-import { StringEnum } from "@mariozechner/pi-ai";
-import { Box, Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	TurnEndEvent,
+	MessageRenderer,
+	ModelRegistry,
+} from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { complete, type Model, type Api, type UserMessage, type TextContent } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { promises as fs } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -165,21 +171,18 @@ Be concise but comprehensive. Preserve exact file paths, function names, and err
 
 async function selectSummarizationModel(
 	currentModel: Model<Api> | undefined,
-	modelRegistry: {
-		find: (provider: string, modelId: string) => Model<Api> | undefined;
-		getApiKey: (model: Model<Api>) => Promise<string | undefined>;
-	},
+	modelRegistry: ModelRegistry,
 ): Promise<Model<Api> | undefined> {
 	const codexModel = modelRegistry.find("openai-codex", CODEX_MODEL_ID);
 	if (codexModel) {
-		const apiKey = await modelRegistry.getApiKey(codexModel);
-		if (apiKey) return codexModel;
+		const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
+		if (auth.ok) return codexModel;
 	}
 
 	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
 	if (haikuModel) {
-		const apiKey = await modelRegistry.getApiKey(haikuModel);
-		if (apiKey) return haikuModel;
+		const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
+		if (auth.ok) return haikuModel;
 	}
 
 	return currentModel;
@@ -436,7 +439,8 @@ function getLastAssistantMessage(ctx: ExtensionContext): ExtractedMessage | unde
 		if (entry.type === "message") {
 			const msg = entry.message;
 			if ("role" in msg && msg.role === "assistant") {
-				const textParts = msg.content
+				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }];
+				const textParts = content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text);
 				if (textParts.length > 0) {
@@ -472,7 +476,8 @@ function getMessagesSinceLastPrompt(ctx: ExtensionContext): ExtractedMessage[] {
 		if (entry.type === "message") {
 			const msg = entry.message;
 			if ("role" in msg && (msg.role === "user" || msg.role === "assistant")) {
-				const textParts = msg.content
+				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }];
+				const textParts = content
 					.filter((c): c is { type: "text"; text: string } => c.type === "text")
 					.map((c) => c.text);
 				if (textParts.length > 0) {
@@ -657,9 +662,9 @@ async function handleCommand(
 			return;
 		}
 
-		const apiKey = await ctx.modelRegistry.getApiKey(model);
-		if (!apiKey) {
-			respond(false, "get_summary", undefined, "No API key available for summarization model");
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (auth.ok === false) {
+			respond(false, "get_summary", undefined, auth.error);
 			return;
 		}
 
@@ -677,7 +682,7 @@ async function handleCommand(
 			const response = await complete(
 				model,
 				{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: [userMessage] },
-				{ apiKey },
+				{ apiKey: auth.apiKey, headers: auth.headers },
 			);
 
 			if (response.stopReason === "aborted" || response.stopReason === "error") {
@@ -764,7 +769,8 @@ async function handleCommand(
 		return;
 	}
 
-	respond(false, command.type, undefined, `Unsupported command: ${command.type}`);
+	const unsupportedType = (command as { type: string }).type;
+	respond(false, unsupportedType, undefined, `Unsupported command: ${unsupportedType}`);
 }
 
 // ============================================================================
@@ -1054,10 +1060,6 @@ export default function (pi: ExtensionAPI) {
 			cliSendHandled = true;
 			await maybeHandleStartupControlSend(pi, ctx);
 		}
-	});
-
-	pi.on("session_switch", async (_event, ctx) => {
-		await refreshServer(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -1403,7 +1405,7 @@ Messages automatically include sender session info for replies. When you want a 
 
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as Record<string, unknown> | undefined;
-			const isError = result.isError === true;
+			const isError = (result as { isError?: boolean }).isError === true;
 
 			// Error case
 			if (isError || details?.error) {

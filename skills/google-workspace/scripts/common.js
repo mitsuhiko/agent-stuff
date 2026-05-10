@@ -16,8 +16,8 @@ const CREDENTIALS_PATH =
   process.env.GOOGLE_WORKSPACE_CREDENTIALS ||
   path.join(CONFIG_DIR, 'credentials.json');
 
-const TOKEN_PATH =
-  process.env.GOOGLE_WORKSPACE_TOKEN || path.join(CONFIG_DIR, 'token.json');
+const TOKENS_DIR =
+  process.env.GOOGLE_WORKSPACE_TOKENS_DIR || path.join(CONFIG_DIR, 'tokens');
 
 const SKILL_ROOT = path.join(__dirname, '..');
 
@@ -26,6 +26,11 @@ const DEFAULT_CLIENT_ID =
 const DEFAULT_CLOUD_FUNCTION_URL =
   'https://google-workspace-extension.geminicli.com';
 
+const REQUIRED_IDENTITY_SCOPES = [
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+];
+
 const DEFAULT_SCOPES = [
   'https://www.googleapis.com/auth/documents',
   'https://www.googleapis.com/auth/drive',
@@ -33,7 +38,7 @@ const DEFAULT_SCOPES = [
   'https://www.googleapis.com/auth/chat.spaces',
   'https://www.googleapis.com/auth/chat.messages',
   'https://www.googleapis.com/auth/chat.memberships',
-  'https://www.googleapis.com/auth/userinfo.profile',
+  ...REQUIRED_IDENTITY_SCOPES,
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/directory.readonly',
   'https://www.googleapis.com/auth/presentations.readonly',
@@ -55,6 +60,10 @@ let runtimeDeps;
 
 function ensureConfigDir() {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
+}
+
+function ensureTokensDir() {
+  fs.mkdirSync(TOKENS_DIR, { recursive: true });
 }
 
 function readJson(filePath) {
@@ -122,8 +131,29 @@ function credentialsExist() {
   return fs.existsSync(CREDENTIALS_PATH);
 }
 
-function tokenExists() {
-  return fs.existsSync(TOKEN_PATH);
+function normalizeEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) {
+    throw new Error('Email is required. Pass --email <account@example.com>.');
+  }
+
+  if (!/^[^@\s]+@[^@\s]+$/.test(normalized)) {
+    throw new Error(`Invalid email address: ${email}`);
+  }
+
+  return normalized;
+}
+
+function tokenFilenameForEmail(email) {
+  return `${encodeURIComponent(normalizeEmail(email))}.json`;
+}
+
+function tokenPathForEmail(email) {
+  return path.join(TOKENS_DIR, tokenFilenameForEmail(email));
+}
+
+function tokenExists(email) {
+  return fs.existsSync(tokenPathForEmail(email));
 }
 
 function loadCredentialsFile() {
@@ -136,11 +166,84 @@ function loadCredentialsFile() {
   return readJson(CREDENTIALS_PATH);
 }
 
-function loadToken() {
-  if (!tokenExists()) {
+function loadToken(email) {
+  const tokenPath = tokenPathForEmail(email);
+  if (!fs.existsSync(tokenPath)) {
     return null;
   }
-  return readJson(TOKEN_PATH);
+  return readJson(tokenPath);
+}
+
+function decodeEmailFromTokenFilename(filename) {
+  if (!filename.endsWith('.json')) {
+    return null;
+  }
+
+  try {
+    return normalizeEmail(decodeURIComponent(filename.slice(0, -5)));
+  } catch {
+    return null;
+  }
+}
+
+function listAccounts() {
+  if (!fs.existsSync(TOKENS_DIR)) {
+    return [];
+  }
+
+  const results = [];
+  const entries = fs.readdirSync(TOKENS_DIR, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+
+    const tokenPath = path.join(TOKENS_DIR, entry.name);
+    const emailFromFilename = decodeEmailFromTokenFilename(entry.name);
+
+    let token;
+    try {
+      token = readJson(tokenPath);
+    } catch (error) {
+      results.push({
+        email: emailFromFilename,
+        path: tokenPath,
+        error: `Failed to read token JSON: ${error.message}`,
+      });
+      continue;
+    }
+
+    let email = emailFromFilename;
+    if (token && token.__email) {
+      try {
+        email = normalizeEmail(token.__email);
+      } catch {
+        // Ignore malformed __email metadata and keep filename-derived email.
+      }
+    }
+
+    const expiryDate = token.expiry_date || null;
+
+    results.push({
+      email,
+      path: tokenPath,
+      authMode: token.__authMode === 'local' || token.__authMode === 'cloud'
+        ? token.__authMode
+        : null,
+      hasAccessToken: Boolean(token.access_token),
+      hasRefreshToken: Boolean(token.refresh_token),
+      scopes: formatScopes(token.scope),
+      expiryDate,
+      expired: expiryDate ? expiryDate < Date.now() : null,
+    });
+  }
+
+  return results.sort((a, b) => {
+    const left = a.email || '';
+    const right = b.email || '';
+    return left.localeCompare(right);
+  });
 }
 
 function createOAuthClientFromCredentials(credentialsJson) {
@@ -192,23 +295,31 @@ function resolveAuthMode(token) {
   return 'cloud';
 }
 
-function saveToken(token, mode) {
+function saveToken(email, token, mode) {
   ensureConfigDir();
+  ensureTokensDir();
+
+  const normalizedEmail = normalizeEmail(email);
+  const tokenPath = tokenPathForEmail(normalizedEmail);
+
   const payload = {
     ...token,
     __authMode: mode,
+    __email: normalizedEmail,
   };
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(payload, null, 2));
+
+  fs.writeFileSync(tokenPath, JSON.stringify(payload, null, 2));
   try {
-    fs.chmodSync(TOKEN_PATH, 0o600);
+    fs.chmodSync(tokenPath, 0o600);
   } catch {
     // Non-POSIX file systems can fail chmod. Ignore.
   }
 }
 
-function clearToken() {
-  if (tokenExists()) {
-    fs.rmSync(TOKEN_PATH);
+function clearToken(email) {
+  const tokenPath = tokenPathForEmail(email);
+  if (fs.existsSync(tokenPath)) {
+    fs.rmSync(tokenPath);
   }
 }
 
@@ -274,24 +385,57 @@ async function refreshViaCloudFunction(refreshToken) {
   return response.json();
 }
 
-async function interactiveLoginLocal(scopes) {
+function mergeWithIdentityScopes(scopes) {
+  return Array.from(new Set([...formatScopes(scopes), ...REQUIRED_IDENTITY_SCOPES]));
+}
+
+async function fetchAuthenticatedEmail(authClient) {
+  const google = getGoogleApis();
+  const oauth2 = google.oauth2({ version: 'v2', auth: authClient });
+  const response = await oauth2.userinfo.get();
+  const email = response?.data?.email;
+  if (!email) {
+    throw new Error(
+      'Authentication succeeded, but Google did not return an email address. ' +
+        'Ensure userinfo.email scope is granted.',
+    );
+  }
+  return normalizeEmail(email);
+}
+
+async function ensureExpectedEmail(authClient, expectedEmail) {
+  const normalizedExpectedEmail = normalizeEmail(expectedEmail);
+  const authenticatedEmail = await fetchAuthenticatedEmail(authClient);
+
+  if (authenticatedEmail !== normalizedExpectedEmail) {
+    throw new Error(
+      `Authenticated as ${authenticatedEmail}, but expected ${normalizedExpectedEmail}. ` +
+        'Sign in with the requested account and retry.',
+    );
+  }
+
+  return authenticatedEmail;
+}
+
+async function interactiveLoginLocal(scopes, email) {
   const { authenticate } = loadRuntimeDeps();
   console.error('ℹ️  Opening browser for Google OAuth login (local credentials)...');
 
   const authClient = await authenticate({
     keyfilePath: CREDENTIALS_PATH,
-    scopes,
+    scopes: mergeWithIdentityScopes(scopes),
   });
 
   if (!authClient.credentials || !authClient.credentials.access_token) {
     throw new Error('Authentication failed: no access token returned.');
   }
 
-  saveToken(authClient.credentials, 'local');
+  const normalizedEmail = await ensureExpectedEmail(authClient, email);
+  saveToken(normalizedEmail, authClient.credentials, 'local');
   return authClient;
 }
 
-async function interactiveLoginCloud(scopes) {
+async function interactiveLoginCloud(scopes, email) {
   const client = createCloudOAuthClient();
   const { cloudFunctionUrl } = getWorkspaceClientConfig();
 
@@ -312,7 +456,7 @@ async function interactiveLoginCloud(scopes) {
   const authUrl = client.generateAuthUrl({
     redirect_uri: cloudFunctionUrl,
     access_type: 'offline',
-    scope: scopes,
+    scope: mergeWithIdentityScopes(scopes),
     state,
     prompt: 'consent',
   });
@@ -436,15 +580,16 @@ async function interactiveLoginCloud(scopes) {
   });
 
   client.setCredentials(credentials);
-  saveToken(credentials, 'cloud');
+  const normalizedEmail = await ensureExpectedEmail(client, email);
+  saveToken(normalizedEmail, credentials, 'cloud');
   return client;
 }
 
-async function interactiveLogin(scopes, mode) {
+async function interactiveLogin(scopes, mode, email) {
   if (mode === 'local') {
-    return interactiveLoginLocal(scopes);
+    return interactiveLoginLocal(scopes, email);
   }
-  return interactiveLoginCloud(scopes);
+  return interactiveLoginCloud(scopes, email);
 }
 
 function stripInternalTokenFields(token) {
@@ -453,17 +598,20 @@ function stripInternalTokenFields(token) {
   }
   const clone = { ...token };
   delete clone.__authMode;
+  delete clone.__email;
   return clone;
 }
 
 async function authorize(options = {}) {
-  const scopes = options.scopes || DEFAULT_SCOPES;
+  const email = normalizeEmail(options.email);
+  const scopes = mergeWithIdentityScopes(options.scopes || DEFAULT_SCOPES);
   const interactive = options.interactive !== false;
 
   ensureConfigDir();
+  ensureTokensDir();
   loadRuntimeDeps();
 
-  const token = loadToken();
+  const token = loadToken(email);
   const mode = resolveAuthMode(token);
 
   const client =
@@ -473,9 +621,22 @@ async function authorize(options = {}) {
 
   if (!token) {
     if (!interactive) {
-      throw new Error(`No token found at ${TOKEN_PATH}. Run: node scripts/auth.js login`);
+      throw new Error(
+        `No token found for ${email} at ${tokenPathForEmail(email)}. ` +
+          `Run: node scripts/auth.js login --email ${email}`,
+      );
     }
-    return interactiveLogin(scopes, mode);
+    return interactiveLogin(scopes, mode, email);
+  }
+
+  if (token.__email) {
+    const tokenEmail = normalizeEmail(token.__email);
+    if (tokenEmail !== email) {
+      throw new Error(
+        `Token metadata mismatch. Requested ${email} but token is tagged as ${tokenEmail}. ` +
+          `Delete it and sign in again: node scripts/auth.js clear --email ${email}`,
+      );
+    }
   }
 
   client.setCredentials(stripInternalTokenFields(token));
@@ -493,7 +654,7 @@ async function authorize(options = {}) {
           refreshed.credentials.refresh_token || client.credentials.refresh_token,
       };
       client.setCredentials(merged);
-      saveToken(merged, 'local');
+      saveToken(email, merged, 'local');
       return client;
     }
 
@@ -505,15 +666,18 @@ async function authorize(options = {}) {
       refresh_token: client.credentials.refresh_token,
     };
     client.setCredentials(merged);
-    saveToken(merged, 'cloud');
+    saveToken(email, merged, 'cloud');
     return client;
   }
 
   if (!interactive) {
-    throw new Error('Token is expired and no refresh token is available. Run login again.');
+    throw new Error(
+      `Token for ${email} is expired and no refresh token is available. ` +
+        `Run: node scripts/auth.js login --email ${email}`,
+    );
   }
 
-  return interactiveLogin(scopes, mode);
+  return interactiveLogin(scopes, mode, email);
 }
 
 function formatScopes(value) {
@@ -532,15 +696,20 @@ function formatScopes(value) {
 module.exports = {
   CONFIG_DIR,
   CREDENTIALS_PATH,
-  TOKEN_PATH,
+  TOKENS_DIR,
   DEFAULT_SCOPES,
   DEFAULT_VERSIONS,
+  REQUIRED_IDENTITY_SCOPES,
   authorize,
   clearToken,
   credentialsExist,
   formatScopes,
   getGoogleApis,
   getWorkspaceClientConfig,
+  listAccounts,
   loadToken,
+  normalizeEmail,
   resolveAuthMode,
+  tokenExists,
+  tokenPathForEmail,
 };
