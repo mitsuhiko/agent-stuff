@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { readFileSync, writeFileSync, watchFile, unwatchFile, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const execAsync = promisify(exec);
 const SIGNAL_FILE = join(homedir(), ".pi", "agent", "theme-signal");
