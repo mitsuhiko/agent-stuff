@@ -51,7 +51,11 @@ export default function (pi: ExtensionAPI) {
       );
 
       const message = `**Command Aliases**\n\n${lines.join("\n")}`;
-      ctx.ui.markdown(message, { title: "Aliases" });
+      pi.sendMessage({
+        customType: "aliases",
+        content: message,
+        display: true,
+      });
     },
   });
 
