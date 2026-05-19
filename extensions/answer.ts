@@ -67,7 +67,7 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_ID = "gpt-5.3";
+const CODEX_MODEL_ID = "gpt-5.3-codex";
 const HAIKU_MODEL_ID = "claude-haiku-4-5";
 
 /**
