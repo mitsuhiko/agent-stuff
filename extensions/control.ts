@@ -44,12 +44,13 @@
 
 import type {
 	ExtensionAPI,
+	ContextEvent,
 	ExtensionContext,
 	TurnEndEvent,
 	MessageRenderer,
 	ModelRegistry,
 } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { complete, type Model, type Api, type UserMessage, type TextContent } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
@@ -149,6 +150,7 @@ interface SocketState {
 	alias: string | null;
 	aliasTimer: ReturnType<typeof setInterval> | null;
 	turnEndSubscriptions: TurnEndSubscription[];
+	contextSyncSince: number | null;
 }
 
 // ============================================================================
@@ -509,6 +511,39 @@ function extractTextContent(content: string | Array<TextContent | { type: string
 		.join("\n");
 }
 
+function getMessageTimestamp(message: ContextEvent["messages"][number]): number | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const timestamp = (message as { timestamp?: unknown }).timestamp;
+	return typeof timestamp === "number" ? timestamp : undefined;
+}
+
+function getMessageIdentity(message: ContextEvent["messages"][number]): string {
+	if (!message || typeof message !== "object") return JSON.stringify(message);
+	const record = message as { role?: unknown; timestamp?: unknown; content?: unknown; toolCallId?: unknown; customType?: unknown };
+	return JSON.stringify({
+		role: record.role,
+		timestamp: record.timestamp,
+		content: record.content,
+		toolCallId: record.toolCallId,
+		customType: record.customType,
+	});
+}
+
+function buildSyncedContextMessages(
+	ctx: ExtensionContext,
+	eventMessages: ContextEvent["messages"],
+	syncSince: number,
+): ContextEvent["messages"] {
+	const rebuilt = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId()).messages;
+	const rebuiltIdentities = new Set(rebuilt.map(getMessageIdentity));
+	const unpersistedPostClearMessages = eventMessages.filter((message) => {
+		const timestamp = getMessageTimestamp(message);
+		if (timestamp === undefined || timestamp < syncSince) return false;
+		return !rebuiltIdentities.has(getMessageIdentity(message));
+	});
+	return [...rebuilt, ...unpersistedPostClearMessages];
+}
+
 function stripSenderInfo(text: string): string {
 	return text.replace(SENDER_INFO_PATTERN, "").trim();
 }
@@ -729,10 +764,14 @@ async function handleCommand(
 			return;
 		}
 
-		// Access internal session manager to rewind (type assertion to access non-readonly methods)
 		try {
-			const sessionManager = ctx.sessionManager as unknown as { rewindTo(id: string): void };
-			sessionManager.rewindTo(firstEntryId);
+			const sessionManager = ctx.sessionManager as unknown as { branch?: (id: string) => void };
+			if (typeof sessionManager.branch !== "function") {
+				respond(false, "clear", undefined, "Session manager does not support branch()");
+				return;
+			}
+			sessionManager.branch(firstEntryId);
+			state.contextSyncSince = Date.now();
 			respond(true, "clear", { cleared: true, targetId: firstEntryId });
 		} catch (error) {
 			respond(false, "clear", undefined, error instanceof Error ? error.message : "Clear failed");
@@ -1021,6 +1060,7 @@ export default function (pi: ExtensionAPI) {
 		alias: null,
 		aliasTimer: null,
 		turnEndSubscriptions: [],
+		contextSyncSince: null,
 	};
 
 	pi.registerMessageRenderer(SESSION_MESSAGE_TYPE, renderSessionMessage);
@@ -1055,6 +1095,7 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		state.contextSyncSince = null;
 		await refreshServer(ctx);
 		if (!cliSendHandled) {
 			cliSendHandled = true;
@@ -1063,6 +1104,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		state.contextSyncSince = null;
 		if (state.aliasTimer) {
 			clearInterval(state.aliasTimer);
 			state.aliasTimer = null;
@@ -1070,6 +1112,11 @@ export default function (pi: ExtensionAPI) {
 		updateStatus(state.context, false);
 		updateSessionEnv(state.context, false);
 		await stopControlServer(state);
+	});
+
+	pi.on("context", (event, ctx) => {
+		if (state.contextSyncSince === null) return;
+		return { messages: buildSyncedContextMessages(ctx, event.messages, state.contextSyncSince) };
 	});
 
 	// Fire turn_end events to subscribers
