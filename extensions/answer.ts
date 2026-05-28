@@ -67,35 +67,94 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_ID = "gpt-5.1-codex-mini";
-const HAIKU_MODEL_ID = "claude-haiku-4-5";
+const DEFAULT_EXTRACTION_MODELS = ["openai-codex/gpt-5.1-codex-mini", "anthropic/claude-haiku-4-5"];
+const ANSWER_MODELS_ENV = "MITSUPI_ANSWER_MODELS";
+
+type ResolvedAuth = { ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string };
+
+function parseModelList(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(/[\s,]+/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function parseAnswerArgs(args: string): { models?: string[] } {
+	const trimmed = args.trim();
+	if (!trimmed) return {};
+
+	const modelFlag = trimmed.match(/(?:^|\s)--models?\s+([^\s]+)/);
+	if (modelFlag) {
+		return { models: parseModelList(modelFlag[1]) };
+	}
+
+	return { models: parseModelList(trimmed) };
+}
+
+function resolveConfiguredModels(pi: ExtensionAPI, args = ""): string[] {
+	const argModels = parseAnswerArgs(args).models;
+	if (argModels && argModels.length > 0) return argModels;
+
+	const flagModels = pi.getFlag("answer-models");
+	if (typeof flagModels === "string") {
+		const models = parseModelList(flagModels);
+		if (models.length > 0) return models;
+	}
+
+	const envModels = parseModelList(process.env[ANSWER_MODELS_ENV]);
+	if (envModels.length > 0) return envModels;
+
+	return DEFAULT_EXTRACTION_MODELS;
+}
+
+function findModel(modelRegistry: ModelRegistry, spec: string): Model<Api> | undefined {
+	if (spec === "current") return undefined;
+	const slash = spec.indexOf("/");
+	if (slash === -1) return undefined;
+	return modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
+}
+
+async function getApiKeyAndHeadersCompat(modelRegistry: ModelRegistry, model: Model<Api>): Promise<ResolvedAuth> {
+	const registry = modelRegistry as any;
+	if (typeof registry.getApiKeyAndHeaders === "function") {
+		return registry.getApiKeyAndHeaders(model);
+	}
+
+	const apiKey =
+		typeof registry.getApiKeyForProvider === "function"
+			? await registry.getApiKeyForProvider(model.provider)
+			: await registry.authStorage?.getApiKey?.(model.provider);
+	const headers = (model as any).headers as Record<string, string> | undefined;
+	return { ok: true, apiKey, headers };
+}
+
+function hasConfiguredAuthCompat(modelRegistry: ModelRegistry, model: Model<Api>): boolean {
+	const registry = modelRegistry as any;
+	if (typeof registry.hasConfiguredAuth === "function") {
+		return registry.hasConfiguredAuth(model);
+	}
+	return true;
+}
 
 /**
- * Prefer Codex mini for extraction when available, otherwise fallback to haiku or the current model.
+ * Select the first configured extraction model, otherwise fallback to the current model.
  */
 async function selectExtractionModel(
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
+	modelSpecs: string[],
 ): Promise<Model<Api>> {
-	const codexModel = modelRegistry.find("openai-codex", CODEX_MODEL_ID);
-	if (codexModel && modelRegistry.hasConfiguredAuth(codexModel)) {
-		const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
-		if (auth.ok) {
-			return codexModel;
-		}
+	for (const spec of modelSpecs) {
+		if (spec === "current") return currentModel;
+
+		const model = findModel(modelRegistry, spec);
+		if (!model || !hasConfiguredAuthCompat(modelRegistry, model)) continue;
+
+		const auth = await getApiKeyAndHeadersCompat(modelRegistry, model);
+		if (auth.ok) return model;
 	}
 
-	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
-	if (!haikuModel || !modelRegistry.hasConfiguredAuth(haikuModel)) {
-		return currentModel;
-	}
-
-	const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
-	if (!auth.ok) {
-		return currentModel;
-	}
-
-	return haikuModel;
+	return currentModel;
 }
 
 /**
@@ -405,7 +464,12 @@ class QnAComponent implements Component {
 }
 
 export default function (pi: ExtensionAPI) {
-	const answerHandler = async (ctx: ExtensionContext) => {
+	pi.registerFlag("answer-models", {
+		description: `Comma- or whitespace-separated extraction models for /answer (provider/model, or current). Env: ${ANSWER_MODELS_ENV}`,
+		type: "string",
+	});
+
+	const answerHandler = async (ctx: ExtensionContext, args = "") => {
 			if (!ctx.hasUI) {
 				ctx.ui.notify("answer requires interactive mode", "error");
 				return;
@@ -445,8 +509,8 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Select the best model for extraction (prefer Codex mini, then haiku)
-			const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
+			// Select the best configured extraction model, falling back to the current model.
+			const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry, resolveConfiguredModels(pi, args));
 
 			// Run extraction with loader UI
 			const extractionResult = await ctx.ui.custom<ExtractionResult | null>((tui, theme, _kb, done) => {
@@ -454,7 +518,7 @@ export default function (pi: ExtensionAPI) {
 				loader.onAbort = () => done(null);
 
 				const doExtract = async () => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
+					const auth = await getApiKeyAndHeadersCompat(ctx.modelRegistry, extractionModel);
 					if (!auth.ok) {
 						throw new Error(auth.error);
 					}
@@ -521,12 +585,12 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("answer", {
-		description: "Extract questions from last assistant message into interactive Q&A",
-		handler: (_args, ctx) => answerHandler(ctx),
+		description: "Extract questions from last assistant message into interactive Q&A. Optional: /answer provider/model[,provider/model] or /answer --model provider/model",
+		handler: (args, ctx) => answerHandler(ctx, args),
 	});
 
 	pi.registerShortcut("ctrl+.", {
 		description: "Extract and answer questions",
-		handler: answerHandler,
+		handler: (ctx) => answerHandler(ctx),
 	});
 }
