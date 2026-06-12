@@ -78,7 +78,7 @@ async function selectExtractionModel(
 	modelRegistry: ModelRegistry,
 ): Promise<Model<Api>> {
 	const codexModel = modelRegistry.find("openai-codex", CODEX_MODEL_ID);
-	if (codexModel) {
+	if (codexModel && modelRegistry.hasConfiguredAuth(codexModel)) {
 		const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
 		if (auth.ok) {
 			return codexModel;
@@ -86,7 +86,7 @@ async function selectExtractionModel(
 	}
 
 	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
-	if (!haikuModel) {
+	if (!haikuModel || !modelRegistry.hasConfiguredAuth(haikuModel)) {
 		return currentModel;
 	}
 
