@@ -337,6 +337,22 @@ export default function loopExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	// LLM-callable reload tool. Tools get ExtensionContext (no ctx.reload),
+	// so queue a follow-up user command that triggers the reload-runtime command.
+	pi.registerTool({
+		name: "reload_runtime",
+		label: "Reload Runtime",
+		description: "Reload extensions, skills, prompts, and themes. Use this after modifying extension files so changes take effect during a loop.",
+		parameters: Type.Object({}),
+		async execute() {
+			pi.sendUserMessage("/reload-runtime", { deliverAs: "followUp" });
+			return {
+				content: [{ type: "text", text: "Queued /reload-runtime as a follow-up command. Extensions will reload when the current turn completes." }],
+				details: {},
+			};
+		},
+	});
+
 	pi.registerCommand("loop", {
 		description: "Start a follow-up loop until a breakout condition is met",
 		handler: async (args, ctx) => {
@@ -443,8 +459,21 @@ export default function loopExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	// Command entrypoint for reload. ctx.reload() is only available in CommandContext.
+	pi.registerCommand("reload-runtime", {
+		description: "Reload extensions, skills, prompts, and themes",
+		handler: async (_args, ctx) => {
+			await ctx.reload();
+			return;
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		await restoreLoopState(ctx);
+		// If this is a reload (not first startup) and loop was active, auto-resume
+		if (loopState.active && _event.reason === "reload") {
+			triggerLoopPrompt(ctx);
+		}
 	});
 
 }
