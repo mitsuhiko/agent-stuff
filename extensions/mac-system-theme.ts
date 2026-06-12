@@ -53,8 +53,11 @@ function applyTheme(ctx: ExtensionContext, themeName: string): boolean {
 	return true;
 }
 
-async function syncTheme(ctx: ExtensionContext, currentTheme: string | undefined): Promise<string | undefined> {
-	const appearance = await getMacAppearance();
+function syncTheme(
+	ctx: ExtensionContext,
+	currentTheme: string | undefined,
+	appearance: Appearance,
+): string | undefined {
 	const preferredTheme = preferredThemeForAppearance(appearance);
 	const fallbackTheme = fallbackThemeForAppearance(appearance);
 	const themes = availableThemeNames(ctx);
@@ -73,29 +76,55 @@ export default function (pi: ExtensionAPI) {
 	let intervalId: ReturnType<typeof setInterval> | undefined;
 	let currentTheme: string | undefined;
 	let syncInFlight = false;
+	let sessionToken = 0;
 
-	async function sync(ctx: ExtensionContext) {
-		if (syncInFlight) return;
+	function isStaleError(err: unknown): boolean {
+		return (
+			err instanceof Error &&
+			err.message.includes("stale after session replacement or reload")
+		);
+	}
+
+	function clearPoller() {
+		if (intervalId) clearInterval(intervalId);
+		intervalId = undefined;
+	}
+
+	function handleSyncError(err: unknown) {
+		if (isStaleError(err)) return;
+		console.error("[mac-system-theme] theme sync failed", err);
+	}
+
+	async function sync(ctx: ExtensionContext, token: number) {
+		if (syncInFlight || token !== sessionToken) return;
 		syncInFlight = true;
 		try {
-			currentTheme = await syncTheme(ctx, currentTheme);
+			const appearance = await getMacAppearance();
+			if (token !== sessionToken) return;
+			currentTheme = syncTheme(ctx, currentTheme, appearance);
+		} catch (err) {
+			handleSyncError(err);
 		} finally {
 			syncInFlight = false;
 		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		await sync(ctx);
+		const token = ++sessionToken;
+		clearPoller();
+
+		await sync(ctx, token);
+		if (token !== sessionToken) return;
 
 		intervalId = setInterval(() => {
-			void sync(ctx);
+			void sync(ctx, token);
 		}, POLL_MS);
 		intervalId.unref?.();
 	});
 
 	pi.on("session_shutdown", () => {
-		if (intervalId) clearInterval(intervalId);
-		intervalId = undefined;
+		++sessionToken;
+		clearPoller();
 	});
 
 	pi.registerCommand("theme-sync-status", {
