@@ -37,7 +37,6 @@ Custom extensions for Pi Coding Agent are in [`extensions`](extensions):
 * [`control.ts`](extensions/control.ts) - Session control helpers (list controllable sessions, etc.).
 * [`files.ts`](extensions/files.ts) - Unified file browser with git status + session references and reveal/open/edit/diff actions.
 * [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork` command to branch the current session into a new pi process in a right-hand Ghostty split.
-* [`go-to-bed.ts`](extensions/go-to-bed.ts) - Late-night safety guard with explicit confirmation after midnight.
 * [`goal.ts`](extensions/goal.ts) - Opt-in `/goal` mode with persisted long-running objectives, status controls, and model tools.
 * [`loop.ts`](extensions/loop.ts) - Prompt loop for rapid iterative coding with optional auto-continue.
 * [`multi-edit.ts`](extensions/multi-edit.ts) - Replaces the built-in `edit` tool with batch `multi` edits and Codex-style `patch` support, including preflight validation.
@@ -55,13 +54,6 @@ Custom extensions for Pi Coding Agent are in [`extensions`](extensions):
 Custom themes are in [`themes`](themes):
 
 * [`nightowl.json`](themes/nightowl.json) - Night Owl-inspired theme.
-
-## Distributions
-
-This repo also contains distribution packages in [`distributions`](distributions):
-
-* [`mitsupi-common`](distributions/mitsupi-common) - Minimal/default set (all resources except `anachb`, `apple-mail`, `oebb-scotty`, `openscad`, `go-to-bed`, and `goal`).
-* [`mitsupi-loaded`](distributions/mitsupi-loaded) - Add-on package that provides `anachb`, `apple-mail`, `oebb-scotty`, `openscad`, `go-to-bed`, and `goal`.
 
 ## Plumbing Commands
 

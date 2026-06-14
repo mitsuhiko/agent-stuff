@@ -16,8 +16,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions",
-      "!extensions/goal.ts"
+      "./extensions/*.ts"
     ],
     "skills": [
       "./skills"
