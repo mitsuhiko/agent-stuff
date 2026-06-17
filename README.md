@@ -39,6 +39,7 @@ Custom extensions for Pi Coding Agent are in [`extensions`](extensions):
 * [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork` command to branch the current session into a new pi process in a right-hand Ghostty split.
 * [`go-to-bed.ts`](extensions/go-to-bed.ts) - Late-night safety guard with explicit confirmation after midnight.
 * [`goal.ts`](extensions/goal.ts) - Opt-in `/goal` mode with persisted long-running objectives, status controls, and model tools.
+* [`hotkeys-overlay.ts`](extensions/hotkeys-overlay.ts) - Lightweight shortcut-help overlay, defaulting to macOS Option-H (`alt+h`); configure via `hotkeys-overlay.json`.
 * [`loop.ts`](extensions/loop.ts) - Prompt loop for rapid iterative coding with optional auto-continue.
 * [`multi-edit.ts`](extensions/multi-edit.ts) - Replaces the built-in `edit` tool with batch `multi` edits and Codex-style `patch` support, including preflight validation.
 * [`notify.ts`](extensions/notify.ts) - Native desktop notifications when the agent finishes.
