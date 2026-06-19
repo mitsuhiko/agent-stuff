@@ -43,13 +43,13 @@ invariants always hold.**
 
 Read these before writing a single test. They determine everything else.
 
-1. **Implementation first, then tests.** Don't do TDD here. You discover where
-   the bugs will actually hide *while writing the implementation* — which states
-   are fragile, which boundaries are awkward, where two subsystems rub against
-   each other. Tests written before that discovery just encode your initial
-   assumptions. Write the code, notice where it feels precarious, then aim your
-   tests at exactly those places. (If the user's own conventions mandate TDD,
-   follow them — this is antirez's view, not a universal law.)
+1. **Understand the implementation before designing the tests.** Don't write
+   tests from guesses. For new code, finish or sketch the implementation enough
+   to see which states are fragile, which boundaries are awkward, and where two
+   subsystems rub against each other. For existing code, read the implementation,
+   callers, docs, and current tests before adding a harness. If the user's own
+   conventions mandate TDD, follow them, but still derive the hard cases from
+   real behavior and contracts.
 
 2. **Test through the public API, never internal components in isolation.** Once
    a data structure is embedded in a system, exercise it through the external
@@ -82,6 +82,34 @@ Read these before writing a single test. They determine everything else.
    changing the software without treating it as "a crystal vase that shatters if
    you brush it." Code you're afraid to touch is dead code. A strong suite is
    what keeps software alive.
+
+## Fit the project before adding machinery
+
+Robust testing is not permission to drop an exotic harness into every repo. First
+inspect the existing project shape and make the smallest setup that can actually
+run locally and in CI:
+
+- **Existing project with tests:** reuse the current runner, assertion style,
+  fixture layout, factories, database helpers, and CI targets unless they are the
+  reason the suite is weak. Add property/model/integration tests next to the
+  closest existing tests and keep ordinary example tests for named regressions
+  and documented edge cases.
+- **Existing project with weak tests:** identify the riskiest public behavior
+  first, then add one high-leverage harness around that behavior instead of
+  scattering many shallow examples. Preserve current tests unless they are
+  wrong or actively block useful coverage.
+- **New project with no test setup:** choose the ecosystem-standard runner and
+  the ecosystem-standard property/fuzz library from `references/frameworks.md`.
+  Add minimal scripts for fast local runs and CI, a fixture directory only if the
+  tests need one, and one representative robust test that proves the setup works.
+- **Complex codebase:** map the boundary under test before mocking. Prefer real
+  adapters in isolated resources for integration behavior, fakes for slow or
+  nondeterministic dependencies, and mocks only for narrow protocol assertions.
+  Make fixtures explicit, deterministic, and cheap to reset.
+- **Vague request such as "add robust tests":** do not ask the user to define the
+  whole strategy unless you are blocked. Inspect the codebase, pick the highest
+  risk surface, state the chosen scope, and implement a focused harness with
+  clear residual risk.
 
 ## The workhorse: fuzz + invariant testing through the API
 
@@ -334,31 +362,49 @@ not vague "test failed" feedback. See
 
 ## How to apply this in a session
 
-1. Identify what's under test and which principle dominates. Use the routing map
-   above before choosing a test style.
-2. Write (or confirm) the implementation first; note the fragile spots out loud.
-3. Decide *what to assert* before how to generate — reach for a reference model
+1. Inspect the project first: language, package manager, current test runner,
+   test scripts, CI config, fixture/database helpers, and the nearest tests for
+   the target behavior. If no setup exists, add the minimal standard setup for
+   that ecosystem.
+2. Identify the public contract under test and which principle dominates. Use
+   the routing map above before choosing a test style.
+3. Confirm the implementation and behavior evidence: code, callers, docs,
+   schemas, tickets, bug reports, and existing examples. Note fragile spots out
+   loud before writing tests.
+4. Decide *what to assert* before how to generate — reach for a reference model
    first, then round-trip / invariant / metamorphic relations. Derive properties
    from the spec, callers, schemas, docs, or observed behavior evidence; do not
    invent properties just because they sound plausible. See `choosing-properties.md`
    and `llm-assisted-property-discovery.md`.
-4. Build the fuzz harness: seeded RNG, random ops through the API, a reference
-   implementation and/or invariants, input generation that *constructs* (not
-   filters) and biases toward edges, sanitizers on. Keep it fast. For structured
-   inputs, prefer grammar/schema/protocol-aware generation over raw bytes.
-5. If the API has competing operations, make it a swarm harness from the start.
-6. Measure the distribution — confirm the generator actually reaches the fragile
+5. Choose the test level deliberately:
+   - Unit/property tests for pure logic, parsers, codecs, reducers, validation,
+     state machines, and deterministic APIs.
+   - Integration tests when correctness depends on storage, transactions,
+     serialization boundaries, auth, networking, or framework wiring.
+   - End-to-end/workflow tests only for user-visible flows or cross-service
+     contracts that lower-level tests cannot prove.
+6. Build the harness: seeded RNG or framework seed replay, random operations
+   through the API, a reference implementation and/or invariants, input
+   generation that *constructs* (not filters) and biases toward edges. Keep it
+   fast. For structured inputs, prefer grammar/schema/protocol-aware generation
+   over raw bytes.
+7. If the API has competing operations, make it a swarm harness from the start.
+8. Measure the distribution — confirm the generator actually reaches the fragile
    states, not just the boring middle (`pbt-craft.md`). Add assertions or
    statistics checks for the categories you care about (edge lengths, invalid
    inputs, duplicate IDs, DST zones, wrap-midnight windows, resize thresholds).
-7. Wire the suite into the project in tiers: fast deterministic local/PR runs,
+9. Wire the suite into the project in tiers: fast deterministic local/PR runs,
    bounded randomized CI runs with seed logging, and longer nightly/continuous
    fuzz runs with persisted corpus/counterexamples. Include dependency install,
    CI path filters, and a safe isolated database/temp resource for destructive
    stateful tests.
-8. Optionally validate the suite with mutation testing.
-9. Always print the seed and make failures replayable; promote each shrunk
-   counterexample to a permanent example test.
+10. Run the relevant local command and, when practical, one small manual mutation
+    to prove the new test fails when behavior is broken. Revert the mutation.
+11. Always print the seed and make failures replayable; promote each shrunk
+    counterexample to a permanent example test.
+12. Report what the suite proves, what it does not prove, any CI wiring added,
+    and residual risks such as untested integrations or generators that still
+    miss important states.
 
 When you write the tests, **say which techniques you're using and why** — the
 user is often learning this approach, and the reasoning is half the value.
