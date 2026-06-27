@@ -1,7 +1,7 @@
 {
   "name": "mitsupi",
   "version": "1.6.0",
-  "description": "Armin's pi coding agent commands, skills, extensions, and themes",
+  "description": "Chip's pi coding agent commands, skills, extensions, and themes",
   "repository": {
     "type": "git",
     "url": "https://github.com/mitsuhiko/agent-stuff.git"
@@ -24,9 +24,7 @@
     "themes": [
       "./themes"
     ],
-    "prompts": [
-      "./commands"
-    ]
+    "prompts": []
   },
   "dependencies": {
     "diff": "^8.0.2"
