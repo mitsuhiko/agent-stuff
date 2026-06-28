@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plainspoken Prose"
+  short_description: "Draft clear, specific prose without AI polish"
+  default_prompt: "Use $plainspoken-prose to draft this in clear, direct language."
