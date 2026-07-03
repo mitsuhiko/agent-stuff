@@ -30,14 +30,14 @@ Row edit script format:
 +insert row text
 -delete row text
 
-Every non-header line must be clearly marked: file headers use [path], operations use @, inserted content rows use +, deleted content rows use -. To insert or delete a real line that starts with +, -, or @, add the row marker first (for example ++literal plus, --literal minus, +@decorator). Do not add unnecessary context lines to row scripts. In @REPLACE/@INS.BEFORE/@INS.AFTER, unmarked lines beginning with a space are ignored; they do not constrain matching and should only appear if accidentally produced.
+Every non-header line must be clearly marked: file headers use [path], operations use @, inserted content rows use +, deleted content rows use -. To insert or delete a real line that starts with +, -, or @, add the row marker first (for example ++literal plus, --literal minus, +@decorator). In @REPLACE, unified-diff style context rows starting with a single space are allowed and are used to locate a contiguous hunk; use @@ inside @REPLACE to separate multiple hunks.
 
 Supported row operations:
 @INS.PRE N       insert following + rows before 1-based line N
 @INS.POST N      insert following + rows after 1-based line N
 @INS.BEFORE      insert + rows before the located - anchor block using pi's edit matcher
 @INS.AFTER       insert + rows after the located - anchor block using pi's edit matcher
-@REPLACE         replace deleted-row blocks with inserted-row blocks using pi's edit matcher; - then + and + then - are both accepted. Consecutive rows with the same marker form one block, so for multiple replacements either alternate +/- blocks or start another @REPLACE operation
+@REPLACE         replace deleted-row blocks with inserted-row blocks using pi's edit matcher; - then + and + then - are both accepted. Space-prefixed context rows are allowed for unified-diff style hunks, including context-anchored insertions. Use @@ inside @REPLACE to separate multiple context hunks.
 @APPEND          append following + rows at the end of the file
 @DEL N-M         delete lines N through M inclusive; @DEL N also deletes one line; @DEL N..M, @DEL N..=M, and @DEL N.=M are accepted aliases
 
@@ -66,9 +66,9 @@ const TOOL_PROMPT_GUIDELINES = [
 	"For edit row scripts, start each file section with [path/to/file], then use operation lines like @REPLACE, @INS.PRE N, @INS.POST N, @INS.BEFORE, @INS.AFTER, @DEL N-M, or @APPEND.",
 	"For edit row scripts, every content row must have a marker: use + for inserted rows and - for deleted rows. To insert a literal line that starts with +, -, or @, keep the + row marker and put the literal character after it.",
 	"Do not add unnecessary context lines to row scripts; only include the - rows needed to uniquely locate a replacement or insertion anchor and the + rows to insert.",
-	"In @REPLACE/@INS.BEFORE/@INS.AFTER, unmarked lines beginning with a space are ignored; do not rely on them to constrain matching.",
+	"In @REPLACE, space-prefixed context rows are supported for unified-diff style hunks and context-anchored insertions; use @@ inside @REPLACE to separate multiple context hunks.",
 	"Prefer @REPLACE with the smallest unique deleted block plus replacement rows for precise changes. @REPLACE uses pi's edit matcher: fuzzy normalization, uniqueness checks, and overlap checks all apply.",
-	"Consecutive + rows or - rows form one block; for multiple replacements, use separate @REPLACE operations or alternating +/- block pairs.",
+	"Consecutive + rows or - rows form one block; for multiple replacements, use separate @REPLACE operations, alternating +/- block pairs, or @@-separated context hunks.",
 	"Use @INS.BEFORE/@INS.AFTER with - rows for the anchor to avoid brittle line numbers when there is a unique nearby line or block.",
 	"Use @INS.PRE/@INS.POST or @DEL only when line numbers are reliable from a recent read; line-number operations are applied sequentially in script order.",
 	"Use @DEL N-M for inclusive line ranges. @DEL N deletes one line. Multiple [file] sections are allowed in one edit call.",
@@ -136,7 +136,7 @@ type RawRowOperation =
 	| { kind: "replace"; groups: RowGroup[] };
 
 type RowGroup = {
-	marker: "+" | "-";
+	marker: "+" | "-" | " " | "@@";
 	lines: string[];
 };
 
@@ -174,7 +174,10 @@ type Preview = { diff: string; files: string[]; firstChangedLine?: number } | { 
 type UnifiedEditCallRenderComponent = Box & {
 	preview?: Preview;
 	previewArgsKey?: string;
+	previewBuiltFromCompleteArgs?: boolean;
 	previewPending?: boolean;
+	previewPendingArgsKey?: string;
+	previewSuppressedArgsKey?: string;
 	settledError?: boolean;
 };
 
@@ -360,6 +363,7 @@ function isWholeLineBoundary(content: string, start: number, length: number, old
 }
 
 function findMatchIndex(content: string, needle: string, wholeLines: boolean): number {
+	if (needle.length === 0) return -1;
 	let index = content.indexOf(needle);
 	while (index !== -1) {
 		if (!wholeLines || isWholeLineBoundary(content, index, needle.length, needle)) return index;
@@ -396,16 +400,27 @@ function fuzzyFindText(content: string, oldText: string, wholeLines: boolean): F
 	};
 }
 
-function countOccurrences(content: string, oldText: string, wholeLines: boolean): number {
-	const fuzzyContent = normalizeForFuzzyMatch(content);
-	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
+function countNeedleOccurrences(content: string, needle: string, wholeLines: boolean): number {
+	if (needle.length === 0) return 0;
 	let count = 0;
-	let index = fuzzyContent.indexOf(fuzzyOldText);
+	let index = content.indexOf(needle);
 	while (index !== -1) {
-		if (!wholeLines || isWholeLineBoundary(fuzzyContent, index, fuzzyOldText.length, fuzzyOldText)) count++;
-		index = fuzzyContent.indexOf(fuzzyOldText, index + (wholeLines ? 1 : fuzzyOldText.length));
+		if (!wholeLines || isWholeLineBoundary(content, index, needle.length, needle)) count++;
+		index = content.indexOf(needle, index + (wholeLines ? 1 : needle.length));
 	}
 	return count;
+}
+
+function countOccurrences(content: string, oldText: string, wholeLines: boolean): number {
+	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
+	if (fuzzyOldText.length === 0) {
+		// Trailing-whitespace normalization can collapse a whitespace-only
+		// oldText to the empty string.  Searching/counting an empty needle with
+		// String#indexOf never reaches -1 once the offset passes content.length,
+		// so use a literal count instead.
+		return countNeedleOccurrences(content, oldText, wholeLines);
+	}
+	return countNeedleOccurrences(normalizeForFuzzyMatch(content), fuzzyOldText, wholeLines);
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
@@ -574,6 +589,17 @@ function parseRowScript(text: string): RawFileScript[] {
 		return currentFile;
 	}
 
+	function pushGroup(marker: RowGroup["marker"], linesToAdd: string[]): void {
+		if (!currentOp || !("groups" in currentOp)) throw new Error("Internal parser error: group row without group operation.");
+		if (marker === "@@") {
+			currentOp.groups.push({ marker, lines: [] });
+			return;
+		}
+		const lastGroup = currentOp.groups[currentOp.groups.length - 1];
+		if (lastGroup && lastGroup.marker === marker) lastGroup.lines.push(...linesToAdd);
+		else currentOp.groups.push({ marker, lines: [...linesToAdd] });
+	}
+
 	for (let i = 0; i < lines.length; i++) {
 		const raw = lines[i];
 		const lineNumber = i + 1;
@@ -588,7 +614,10 @@ function parseRowScript(text: string): RawFileScript[] {
 			continue;
 		}
 
-		if (raw.startsWith("@@")) continue;
+		if (raw.startsWith("@@")) {
+			if (currentOp && "groups" in currentOp) pushGroup("@@", []);
+			continue;
+		}
 
 		if (raw.startsWith("@")) {
 			const file = requireFile(lineNumber);
@@ -649,21 +678,17 @@ function parseRowScript(text: string): RawFileScript[] {
 			}
 
 			if (!("groups" in currentOp)) throw new Error(`Line ${lineNumber}: unexpected row for @DEL.`);
-			const lastGroup = currentOp.groups[currentOp.groups.length - 1];
-			if (lastGroup && lastGroup.marker === marker) lastGroup.lines.push(body);
-			else currentOp.groups.push({ marker, lines: [body] });
+			pushGroup(marker, [body]);
 			continue;
 		}
 
 		if (raw.startsWith(" ") && currentOp && "groups" in currentOp) {
-			// Accept accidental unified-diff context rows inside block-oriented row
-			// operations.  They are intentionally ignored rather than used for
-			// matching; the actual - anchor/replacement block still has to be unique.
 			requireFile(lineNumber);
+			if (currentOp.kind === "replace") pushGroup(" ", [raw.slice(1)]);
 			continue;
 		}
 
-		throw new Error(`Line ${lineNumber}: invalid row script line. Every non-empty row must start with [filename], @, +, or -.`);
+		throw new Error(`Line ${lineNumber}: invalid row script line. Every non-empty row must start with [filename], @, +, -, or a space-prefixed @REPLACE context row.`);
 	}
 
 	finishOp();
@@ -674,23 +699,68 @@ function parseRowScript(text: string): RawFileScript[] {
 	return files;
 }
 
-function getReplacePairs(path: string, op: Extract<RawRowOperation, { kind: "replace" }>): Array<{ oldLines: string[]; newLines: string[] }> {
-	const groups = op.groups.filter((group) => group.lines.length > 0);
-	if (groups.length === 0) throw new Error(`@REPLACE in ${path} has no rows.`);
+function getContextualReplacePairs(path: string, groups: RowGroup[]): Array<{ oldLines: string[]; newLines: string[] }> {
+	const hunks: RowGroup[][] = [[]];
+	for (const group of groups) {
+		if (group.marker === "@@") {
+			if (hunks[hunks.length - 1].length > 0) hunks.push([]);
+			continue;
+		}
+		if (group.lines.length > 0) hunks[hunks.length - 1].push(group);
+	}
 
-	if (groups.length === 1) {
-		if (groups[0].marker === "-") return [{ oldLines: groups[0].lines, newLines: [] }];
+	const pairs: Array<{ oldLines: string[]; newLines: string[] }> = [];
+	for (let i = 0; i < hunks.length; i++) {
+		const hunk = hunks[i];
+		if (hunk.length === 0) continue;
+		const oldLines: string[] = [];
+		const newLines: string[] = [];
+		let hasChange = false;
+
+		for (const group of hunk) {
+			if (group.marker === " ") {
+				oldLines.push(...group.lines);
+				newLines.push(...group.lines);
+			} else if (group.marker === "-") {
+				oldLines.push(...group.lines);
+				hasChange = true;
+			} else if (group.marker === "+") {
+				newLines.push(...group.lines);
+				hasChange = true;
+			}
+		}
+
+		const label = hunks.length > 1 ? ` hunk ${i + 1}` : "";
+		if (!hasChange) throw new Error(`@REPLACE${label} in ${path} has no + or - rows.`);
+		if (oldLines.length === 0) {
+			throw new Error(`@REPLACE${label} in ${path} has + rows but no - or context rows to locate the insertion.`);
+		}
+		pairs.push({ oldLines, newLines });
+	}
+
+	if (pairs.length === 0) throw new Error(`@REPLACE in ${path} has no rows.`);
+	return pairs;
+}
+
+function getReplacePairs(path: string, op: Extract<RawRowOperation, { kind: "replace" }>): Array<{ oldLines: string[]; newLines: string[] }> {
+	const groups = op.groups.filter((group) => group.marker === "@@" || group.lines.length > 0);
+	if (groups.length === 0) throw new Error(`@REPLACE in ${path} has no rows.`);
+	if (groups.some((group) => group.marker === " " || group.marker === "@@")) return getContextualReplacePairs(path, groups);
+
+	const changeGroups = groups as Array<RowGroup & { marker: "+" | "-" }>;
+	if (changeGroups.length === 1) {
+		if (changeGroups[0].marker === "-") return [{ oldLines: changeGroups[0].lines, newLines: [] }];
 		throw new Error(`@REPLACE in ${path} has + rows but no - rows to locate the replacement.`);
 	}
 
-	if (groups.length % 2 !== 0) {
+	if (changeGroups.length % 2 !== 0) {
 		throw new Error(`@REPLACE in ${path} has an odd number of +/- blocks. Pair each deleted block with an inserted block.`);
 	}
 
 	const pairs: Array<{ oldLines: string[]; newLines: string[] }> = [];
-	for (let i = 0; i < groups.length; i += 2) {
-		const a = groups[i];
-		const b = groups[i + 1];
+	for (let i = 0; i < changeGroups.length; i += 2) {
+		const a = changeGroups[i];
+		const b = changeGroups[i + 1];
 		if (a.marker === b.marker) throw new Error(`@REPLACE in ${path} has two adjacent ${a.marker} blocks; expected paired + and - blocks.`);
 		pairs.push({ oldLines: a.marker === "-" ? a.lines : b.lines, newLines: a.marker === "+" ? a.lines : b.lines });
 	}
@@ -727,7 +797,10 @@ function applyAnchorInsertOperation(
 	op: Extract<RawRowOperation, { kind: "insertBeforeAnchor" | "insertAfterAnchor" }>,
 ): string {
 	const opName = op.kind === "insertBeforeAnchor" ? "@INS.BEFORE" : "@INS.AFTER";
-	const groups = op.groups.filter((group) => group.lines.length > 0);
+	const groups = op.groups.filter(
+		(group): group is RowGroup & { marker: "+" | "-" } =>
+			(group.marker === "+" || group.marker === "-") && group.lines.length > 0,
+	);
 	if (groups.length !== 2 || groups[0].marker === groups[1].marker) {
 		throw new Error(`${opName} in ${path} must contain exactly one - anchor block and one + insert block.`);
 	}
@@ -843,6 +916,15 @@ async function buildRowPlan(text: string, cwd: string): Promise<ParsedPlan> {
 function isPatchPayload(text: string): boolean {
 	const trimmed = normalizeToLF(text).trim();
 	return trimmed.startsWith("*** Begin Patch") && trimmed.endsWith("*** End Patch");
+}
+
+function isPatchLikePayload(text: string): boolean {
+	return normalizeToLF(text).trimStart().startsWith("*** Begin Patch");
+}
+
+function patchTextForPreview(text: string): string {
+	const normalized = normalizeToLF(text).trimEnd();
+	return normalized.endsWith("*** End Patch") ? normalized : `${normalized}\n*** End Patch`;
 }
 
 function parseUpdateChunk(lines: string[], startIndex: number, lastContentLine: number, allowMissingContext: boolean): { chunk: UpdateChunk; nextIndex: number } {
@@ -1043,7 +1125,14 @@ async function buildPatchPlan(text: string, cwd: string): Promise<ParsedPlan> {
 }
 
 async function buildPlan(text: string, cwd: string): Promise<ParsedPlan> {
-	return isPatchPayload(text) ? buildPatchPlan(text, cwd) : buildRowPlan(text, cwd);
+	return isPatchLikePayload(text) ? buildPatchPlan(text, cwd) : buildRowPlan(text, cwd);
+}
+
+async function buildPreviewPlan(text: string, cwd: string, argsComplete: boolean): Promise<ParsedPlan> {
+	if (!argsComplete && isPatchLikePayload(text) && !isPatchPayload(text)) {
+		return buildPatchPlan(patchTextForPreview(text), cwd);
+	}
+	return buildPlan(text, cwd);
 }
 
 // ============================================================================
@@ -1189,7 +1278,7 @@ function previewForPlan(plan: ParsedPlan): Preview {
 			details: detailsForChange(change.path, change.oldText, change.newText),
 		})),
 	);
-	return { diff: details.diff, files: plan.changes.map((change) => change.path), firstChangedLine: details.firstChangedLine };
+	return { diff: details.diff, files: uniquePaths(plan.changes.map((change) => change.path)), firstChangedLine: details.firstChangedLine };
 }
 
 function str(value: unknown): string | null {
@@ -1221,22 +1310,79 @@ function uniquePaths(paths: string[]): string[] {
 	return Array.from(new Set(paths));
 }
 
-function getRenderablePaths(text: string | undefined): string[] | undefined {
-	if (!text) return undefined;
-	try {
-		if (isPatchPayload(text)) {
-			return uniquePaths(parsePatch(text).map((op) => op.path));
+function uniquePathsForCwd(paths: string[], cwd: string): string[] {
+	const seen = new Set<string>();
+	const unique: string[] = [];
+	for (const path of paths) {
+		let key = path;
+		try {
+			key = resolveToCwd(cwd, path);
+		} catch {
+			// Keep the raw path as its own key if it is still being streamed.
 		}
-		return uniquePaths(parseRowScript(text).map((script) => script.path));
+		if (seen.has(key)) continue;
+		seen.add(key);
+		unique.push(path);
+	}
+	return unique;
+}
+
+function safeRenderablePath(path: string): string | undefined {
+	try {
+		return normalizePath(path);
 	} catch {
 		return undefined;
 	}
 }
 
+function extractRowHeaderPaths(text: string): string[] {
+	const paths: string[] = [];
+	const lines = normalizeToLF(text).split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const trimmed = lines[i].trim();
+		const complete = /^\[(.+)]\s*$/.exec(trimmed);
+		const partial = i === lines.length - 1 ? /^\[([^\]]+)$/.exec(trimmed) : null;
+		const path = safeRenderablePath(complete?.[1] ?? partial?.[1] ?? "");
+		if (path) paths.push(path);
+	}
+	return uniquePaths(paths);
+}
+
+function extractPatchHeaderPaths(text: string): string[] {
+	const paths: string[] = [];
+	const prefixes = ["*** Add File: ", "*** Delete File: ", "*** Update File: "];
+	for (const raw of normalizeToLF(text).split("\n")) {
+		const trimmed = raw.trim();
+		for (const prefix of prefixes) {
+			if (!trimmed.startsWith(prefix)) continue;
+			const path = safeRenderablePath(trimmed.slice(prefix.length));
+			if (path) paths.push(path);
+			break;
+		}
+	}
+	return uniquePaths(paths);
+}
+
+function getRenderablePaths(text: string | undefined): string[] | undefined {
+	if (!text) return undefined;
+	const patchLike = isPatchLikePayload(text);
+	const fallback = patchLike ? extractPatchHeaderPaths(text) : extractRowHeaderPaths(text);
+	try {
+		const paths = patchLike
+			? parsePatch(isPatchPayload(text) ? text : patchTextForPreview(text)).map((op) => op.path)
+			: parseRowScript(text).map((script) => script.path);
+		const unique = uniquePaths(paths);
+		return unique.length > 0 ? unique : fallback.length > 0 ? fallback : undefined;
+	} catch {
+		return fallback.length > 0 ? fallback : undefined;
+	}
+}
+
 function renderUnifiedPathLabel(paths: string[] | undefined, theme: any, cwd: string): string {
-	if (!paths || paths.length === 0) return renderToolPath("", theme, cwd);
-	if (paths.length === 1) return renderToolPath(str(paths[0]), theme, cwd);
-	return theme.fg("accent", `${paths.length} files`);
+	const unique = paths ? uniquePathsForCwd(paths, cwd) : undefined;
+	if (!unique || unique.length === 0) return renderToolPath("", theme, cwd);
+	if (unique.length === 1) return renderToolPath(str(unique[0]), theme, cwd);
+	return theme.fg("accent", `${unique.length} files`);
 }
 
 function formatUnifiedEditCall(text: string | undefined, preview: Preview | undefined, theme: any, cwd: string): string {
@@ -1249,7 +1395,10 @@ function createUnifiedEditCallRenderComponent(): UnifiedEditCallRenderComponent 
 	return Object.assign(new Box(1, 1, (text: string) => text), {
 		preview: undefined as Preview | undefined,
 		previewArgsKey: undefined as string | undefined,
+		previewBuiltFromCompleteArgs: false,
 		previewPending: false,
+		previewPendingArgsKey: undefined as string | undefined,
+		previewSuppressedArgsKey: undefined as string | undefined,
 		settledError: false,
 	});
 }
@@ -1286,6 +1435,7 @@ function setUnifiedEditPreview(
 	component: UnifiedEditCallRenderComponent,
 	preview: Preview,
 	argsKey: string | undefined,
+	argsComplete = true,
 ): boolean {
 	const current = component.preview;
 	const changed =
@@ -1300,8 +1450,45 @@ function setUnifiedEditPreview(
 				current.files.join("\0") !== preview.files.join("\0")));
 	component.preview = preview;
 	component.previewArgsKey = argsKey;
+	component.previewBuiltFromCompleteArgs = argsComplete;
 	component.previewPending = false;
+	component.previewPendingArgsKey = undefined;
+	component.previewSuppressedArgsKey = undefined;
 	return changed;
+}
+
+function requestUnifiedEditPreview(
+	component: UnifiedEditCallRenderComponent,
+	text: string | undefined,
+	argsKey: string | undefined,
+	cwd: string,
+	argsComplete: boolean,
+	invalidate: () => void,
+): void {
+	const hasUsablePreview = component.preview && (!argsComplete || component.previewBuiltFromCompleteArgs);
+	if (!text || !argsKey || hasUsablePreview || component.previewPendingArgsKey === argsKey) return;
+	if (!argsComplete && component.previewSuppressedArgsKey === argsKey) return;
+
+	component.previewPending = true;
+	component.previewPendingArgsKey = argsKey;
+	const requestKey = argsKey;
+	void buildPreviewPlan(text, cwd, argsComplete)
+		.then((plan): Preview => previewForPlan(plan))
+		.catch((err): Preview | undefined => {
+			if (!argsComplete) return undefined;
+			return { error: err instanceof Error ? err.message : String(err) };
+		})
+		.then((preview) => {
+			if (component.previewArgsKey !== requestKey) return;
+			component.previewPending = false;
+			component.previewPendingArgsKey = undefined;
+			if (preview) {
+				setUnifiedEditPreview(component, preview, requestKey, argsComplete);
+			} else {
+				component.previewSuppressedArgsKey = requestKey;
+			}
+			invalidate();
+		});
 }
 
 function buildUnifiedEditCallComponent(
@@ -1373,23 +1560,14 @@ export default function unifiedEditExtension(pi: ExtensionAPI) {
 			if (component.previewArgsKey !== key) {
 				component.preview = undefined;
 				component.previewArgsKey = key;
+				component.previewBuiltFromCompleteArgs = false;
 				component.previewPending = false;
+				component.previewPendingArgsKey = undefined;
+				component.previewSuppressedArgsKey = undefined;
 				component.settledError = false;
 			}
 
-			if (context.argsComplete && text && !component.preview && !component.previewPending) {
-				component.previewPending = true;
-				const requestKey = key;
-				void buildPlan(text, context.cwd)
-					.then((plan): Preview => previewForPlan(plan))
-					.catch((err): Preview => ({ error: err instanceof Error ? err.message : String(err) }))
-					.then((preview) => {
-						if (component.previewArgsKey === requestKey) {
-							setUnifiedEditPreview(component, preview, requestKey);
-							context.invalidate();
-						}
-					});
-			}
+			requestUnifiedEditPreview(component, text, key, context.cwd, context.argsComplete, () => context.invalidate());
 
 			return buildUnifiedEditCallComponent(component, text, theme, context.cwd);
 		},
@@ -1409,7 +1587,7 @@ export default function unifiedEditExtension(pi: ExtensionAPI) {
 							component,
 							{
 								diff: typed.details.diff,
-								files: typed.details.files.map((file) => file.path),
+								files: uniquePaths(typed.details.files.map((file) => file.path)),
 								firstChangedLine: typed.details.firstChangedLine,
 							},
 							key,
