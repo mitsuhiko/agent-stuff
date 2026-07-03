@@ -49,7 +49,7 @@ Pi extensions live in [`extensions`](extensions):
 - [`control.ts`](extensions/control.ts) - Session control sockets, `/control-sessions`, and the `send_to_session` / `list_sessions` tools for communicating with other live Pi sessions.
 - [`files.ts`](extensions/files.ts) - `/files` browser with git status and session references, plus shortcuts to browse, reveal, and Quick Look referenced files.
 - [`goal.ts`](extensions/goal.ts) - `/goal` long-running objective mode with automatic continuation and the `get_goal`, `create_goal`, and `update_goal` tools.
-- [`multi-edit.ts`](extensions/multi-edit.ts) - Enhanced `edit` tool supporting single edits, batch `multi` edits, and Codex-style patches with preflight validation.
+- [`unified-edit.ts`](extensions/unified-edit.ts) - Replaces `edit` with a single text payload supporting marked row edit scripts and Codex-style patches with preflight validation.
 - [`no-sleep.ts`](extensions/no-sleep.ts) - `/no-sleep` macOS `caffeinate` integration to prevent sleep while an agent or session is active.
 - [`notify.ts`](extensions/notify.ts) - Native terminal desktop notification when the agent finishes and is ready for input.
 - [`prompt-editor.ts`](extensions/prompt-editor.ts) - `/mode`, `ctrl+shift+m`, and `ctrl+space` prompt-mode selector with persistence and shortcuts.
