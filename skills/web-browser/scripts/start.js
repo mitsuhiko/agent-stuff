@@ -15,23 +15,27 @@ if (!Number.isInteger(DEBUG_PORT) || DEBUG_PORT < 1 || DEBUG_PORT > 65535) {
 }
 
 const args = new Set(process.argv.slice(2));
+const headless = args.has("--headless");
 const useProfile = args.has("--profile");
 const resetProfile = args.has("--reset-profile");
 
 const unknownArgs = [...args].filter(
-  (arg) => arg !== "--profile" && arg !== "--reset-profile",
+  (arg) =>
+    arg !== "--headless" && arg !== "--profile" && arg !== "--reset-profile",
 );
 if (unknownArgs.length > 0) {
-  console.log("Usage: start.js [--profile] [--reset-profile]");
+  console.log("Usage: start.js [--headless] [--profile] [--reset-profile]");
   console.log("\nOptions:");
+  console.log("  --headless      Run Chrome without opening a visible window");
   console.log(
     "  --profile       Copy your default Chrome profile into an isolated cache",
   );
   console.log("  --reset-profile Clear the selected cached profile before launch");
   console.log("\nExamples:");
+  console.log("  start.js --headless");
   console.log("  start.js");
-  console.log("  start.js --profile");
-  console.log("  start.js --reset-profile");
+  console.log("  start.js --headless --profile");
+  console.log("  start.js --headless --reset-profile");
   process.exit(1);
 }
 
@@ -127,20 +131,22 @@ if (await isDebugEndpointUp()) {
     isProcessAlive(runningState.pid) &&
     runningState.port === DEBUG_PORT
   ) {
+    const runningHeadless = runningState.headless === true;
     if (
       runningState.mode === mode &&
-      runningState.userDataDir === userDataDir
+      runningState.userDataDir === userDataDir &&
+      runningHeadless === headless
     ) {
       console.log(
-        `✓ Chrome already running on :${DEBUG_PORT} (reusing ${mode} profile)`,
+        `✓ Chrome already running on :${DEBUG_PORT} (${headless ? "headless" : "headed"}, ${mode} profile)`,
       );
       process.exit(0);
     }
 
     console.error(
-      `✗ Chrome already running on :${DEBUG_PORT} in ${runningState.mode} mode`,
+      `✗ Chrome already running on :${DEBUG_PORT} (${runningHeadless ? "headless" : "headed"}, ${runningState.mode} profile)`,
     );
-    console.error("  Close it first before switching browser profile modes.");
+    console.error("  Close it first before switching launch or profile modes.");
     process.exit(1);
   }
 
@@ -210,6 +216,10 @@ const chromeArgs = [
   "--enable-automation",
 ];
 
+if (headless) {
+  chromeArgs.push("--headless");
+}
+
 const chromeProc = spawn(chromeBinary, chromeArgs, {
   detached: true,
   stdio: "ignore",
@@ -234,6 +244,7 @@ if (!connected) {
 writeState({
   pid: chromeProc.pid,
   mode,
+  headless,
   userDataDir,
   port: DEBUG_PORT,
   startedAt: new Date().toISOString(),
@@ -244,7 +255,7 @@ const watcherPath = join(scriptDir, "watch.js");
 spawn(process.execPath, [watcherPath], { detached: true, stdio: "ignore" }).unref();
 
 console.log(
-  `✓ Chrome started on :${DEBUG_PORT} with ${useProfile ? "profile-copy" : "fresh"} profile`,
+  `✓ Chrome started on :${DEBUG_PORT} in ${headless ? "headless" : "headed"} mode with ${useProfile ? "profile-copy" : "fresh"} profile`,
 );
 if (!useProfile) {
   console.log(`  profile dir: ${userDataDir}`);

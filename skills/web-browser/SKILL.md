@@ -1,6 +1,6 @@
 ---
 name: web-browser
-description: "Allows to interact with web pages by performing actions such as clicking buttons, filling out forms, and navigating links. It works by remote controlling Google Chrome or Chromium browsers using the Chrome DevTools Protocol (CDP). When Claude needs to browse the web, it can use this skill to do so."
+description: "Automate and interact with web pages through Chrome or Chromium using the Chrome DevTools Protocol (CDP): navigate, click, fill forms, inspect content, take screenshots, and debug console or network activity. Use when an agent needs a real browser. Prefer headless Chrome unless visible browser interaction is required."
 license: Stolen from Mario
 ---
 
@@ -8,15 +8,18 @@ license: Stolen from Mario
 
 Minimal CDP tools for collaborative site exploration.
 
-## Start Chrome
+## Start Chrome (Prefer Headless)
 
 ```bash
-./scripts/start.js                  # Isolated reusable profile (default)
-./scripts/start.js --profile        # Copy your profile into isolated cache
-./scripts/start.js --reset-profile  # Clear selected cached profile before launch
+./scripts/start.js --headless            # Recommended: isolated reusable profile
+./scripts/start.js --headless --profile  # Headless with a copy of your profile
+./scripts/start.js                       # Visible browser window when needed
+./scripts/start.js --headless --reset-profile  # Clear cached profile before launch
 ```
 
-Starts Chrome with remote debugging (default port `:9222`).
+Starts Chrome with remote debugging (default port `:9222`). **Agents should use `--headless` by default** because it is less disruptive and supports navigation, evaluation, screenshots, emulation, and logging. Use headed mode only when a person needs to see or interact with the browser, such as for `pick.js`, manual authentication, or debugging a headless-specific difference.
+
+The start script only reuses a running browser when its profile and launch mode match. Close the running skill browser before switching between headless and headed mode.
 
 Profile behavior:
 - Default mode uses: `~/.cache/agent-web/browser/fresh-profile`
@@ -27,13 +30,13 @@ Profile behavior:
 If Chrome is installed in a non-standard location, set:
 
 ```bash
-BROWSER_BIN=/path/to/chrome ./scripts/start.js
+BROWSER_BIN=/path/to/chrome ./scripts/start.js --headless
 ```
 
 Optional debug endpoint override:
 
 ```bash
-BROWSER_DEBUG_PORT=9333 ./scripts/start.js
+BROWSER_DEBUG_PORT=9333 ./scripts/start.js --headless
 ```
 
 ## Navigate
@@ -91,7 +94,7 @@ Takes a screenshot and returns a temp file path.
 ./scripts/pick.js "Click the submit button"
 ```
 
-Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, Enter to finish.
+Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, Enter to finish. This requires headed Chrome; launch `start.js` without `--headless`.
 
 ## Dismiss Cookie Dialogs
 
@@ -110,7 +113,7 @@ Run after navigating to a page:
 ## Quick Mobile Debug Flow
 
 ```bash
-./scripts/start.js
+./scripts/start.js --headless
 ./scripts/nav.js https://example.com
 ./scripts/emulate.js iphone-14
 ./scripts/nav.js https://example.com      # reload with mobile UA
