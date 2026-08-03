@@ -552,10 +552,11 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						const initialDetails = detailsFor(spec, "running", { startedAt });
 						onUpdate?.({ content: [{ type: "text", text: partialText(initialDetails) }], details: initialDetails });
 
-						const sent = await pi.exec("tmux", tmuxArgs("send-keys", "-t", tmuxTarget, "-l", "--", childCommand));
-						if (sent.code !== 0) throw new Error(sent.stderr.trim() || "Failed to start child Pi.");
-						const entered = await pi.exec("tmux", tmuxArgs("send-keys", "-t", tmuxTarget, "Enter"));
-						if (entered.code !== 0) throw new Error(entered.stderr.trim() || "Failed to submit child command.");
+						const started = await pi.exec(
+							"tmux",
+							tmuxArgs("respawn-pane", "-k", "-c", cwd, "-t", tmuxTarget, childCommand),
+						);
+						if (started.code !== 0) throw new Error(started.stderr.trim() || "Failed to start child Pi.");
 
 						let lastPane = "";
 						let childResult: ChildResult | undefined;
