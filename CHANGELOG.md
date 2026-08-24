@@ -10,6 +10,7 @@ All notable changes to agent-stuff are documented here.
 * Added a `no-sleep` extension with `/no-sleep` macOS `caffeinate` integration.
 * Added a `trust-github-repos` extension that automatically trusts GitHub checkouts owned by `earendil-works` or `mitsuhiko`.
 * Added an idle continue shortcut (`shift+option+enter`) that sends `continue` only when the agent is stopped.
+* Added an `audio-transcription` skill with local model precaching.
 * Added the `dayowl` and `modern-dark` themes.
 * Added an optional headless Chrome mode, improved mobile emulation, and profile isolation to the `web-browser` skill, with Chrome extensions disabled in headless mode.
 * Added a cost/session column and provider grouping to `/session-breakdown`, and skipped faux provider sessions.
