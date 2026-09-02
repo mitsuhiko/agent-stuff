@@ -57,7 +57,7 @@ Pi extensions live in [`extensions`](extensions):
 - [`review.ts`](extensions/review.ts) - `/review` and `/end-review` for reviewing uncommitted changes, branches, commits, PRs, or folder snapshots.
 - [`session-breakdown.ts`](extensions/session-breakdown.ts) - `/session-breakdown` TUI for 7/30/90-day session usage, token, model, and cost analysis.
 - [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork` to branch the current session into a new Pi process in a right-hand Ghostty split.
-- [`subagent.ts`](extensions/subagent.ts) - Serial `subagent` tool that runs one observable Pi child at a time in tmux; attach with the printed `pi --attach-subagent …` command.
+- [`subagent.ts`](extensions/subagent.ts) - Serial `subagent` tool that runs one observable Pi child at a time in tmux; attach with the printed `pi --attach-subagent …` command. Stalled children (failed LLM calls that never settle, hung tools, interactive waits) are reaped by an idle watchdog (default 10 min, `idleTimeoutMs` param, 0 disables) and an optional wall-clock limit (`timeoutMs`).
 - [`todos.ts`](extensions/todos.ts) - `/todos` TUI plus `todo` tool for file-backed tasks in `.pi/todos` or `PI_TODO_PATH`.
 - [`trust-github-repos.ts`](extensions/trust-github-repos.ts) - Automatically trusts GitHub checkouts owned by `earendil-works` or `mitsuhiko`.
 - [`uv.ts`](extensions/uv.ts) - Replaces the bash tool with a `uv`-aware version that injects Python command shims and blocks common non-`uv` workflows.
