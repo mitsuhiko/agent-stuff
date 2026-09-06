@@ -5,6 +5,7 @@ All notable changes to agent-stuff are documented here.
 ## Unreleased
 
 * Fixed the notify extension leaking OSC 8 hyperlink text into fullscreen prompt editors.
+* Fixed the notify extension sending desktop notifications for Pi's transient WebSocket errors.
 
 ## 1.6.0
 

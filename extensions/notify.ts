@@ -22,6 +22,21 @@ const notify = (title: string, body: string): void => {
 const isTextPart = (part: unknown): part is { type: "text"; text: string } =>
 	Boolean(part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part);
 
+const isTransientWebSocketError = (
+	messages: Array<{ role?: string; stopReason?: string; errorMessage?: string }>,
+): boolean => {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role !== "assistant") {
+			continue;
+		}
+
+		return message.stopReason === "error" && message.errorMessage === "WebSocket error";
+	}
+
+	return false;
+};
+
 const extractLastAssistantText = (messages: Array<{ role?: string; content?: unknown }>): string | null => {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
@@ -88,7 +103,12 @@ const formatNotification = (text: string | null): { title: string; body: string 
 
 export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (event) => {
-		const lastText = extractLastAssistantText(event.messages ?? []);
+		const messages = event.messages ?? [];
+		if (isTransientWebSocketError(messages)) {
+			return;
+		}
+
+		const lastText = extractLastAssistantText(messages);
 		const { title, body } = formatNotification(lastText);
 		notify(title, body);
 	});
