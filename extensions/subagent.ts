@@ -23,6 +23,19 @@ const RESULT_ENV = "PI_TMUX_SUBAGENT_RESULT";
 const RUNS_DIR = "tmux-subagents";
 const POLL_INTERVAL_MS = 500;
 const PANE_PREVIEW_LINES = 18;
+const IDLE_TIMEOUT_ENV = "PI_TMUX_SUBAGENT_IDLE_TIMEOUT_MS";
+const MAX_RUNTIME_ENV = "PI_TMUX_SUBAGENT_MAX_RUNTIME_MS";
+/** Default inactivity budget: no agent events (child watchdog) with no result kills the subagent. */
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60_000;
+/** How often the child watchdog re-checks activity. */
+const CHILD_WATCHDOG_INTERVAL_MS = 10_000;
+/**
+ * Extra time the parent gives a child after the idle timeout before killing it.
+ * The child should report its own idle timeout via result.json; this backstop
+ * covers cases where the child reporter is itself stuck (no result file will
+ * ever appear and the pane stays alive).
+ */
+const PARENT_IDLE_GRACE_MS = 5 * 60_000;
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const EXTENSION_PATH = fileURLToPath(import.meta.url);
 
@@ -211,12 +224,20 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
 
 function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
 	let reported = false;
+	let latestCtx: ExtensionContext | undefined;
+	let lastActivityAt = Date.now();
+	let toolExecutingSince: number | undefined;
+	const startedAt = Date.now();
+	const idleTimeoutMs = parseTimeoutEnv(process.env[IDLE_TIMEOUT_ENV]);
+	const maxRuntimeMs = parseTimeoutEnv(process.env[MAX_RUNTIME_ENV]);
+	let watchdog: ReturnType<typeof setInterval> | undefined;
 
-	const report = async (ctx: ExtensionContext, fallbackError?: string): Promise<void> => {
+	const report = async (ctx: ExtensionContext | undefined, fallbackError?: string): Promise<void> => {
 		if (reported) return;
 		reported = true;
+		if (watchdog) clearInterval(watchdog);
 
-		const assistant = findLastAssistant(ctx);
+		const assistant = ctx ? findLastAssistant(ctx) : undefined;
 		const stopReason = typeof assistant?.stopReason === "string" ? assistant.stopReason : undefined;
 		const assistantError = typeof assistant?.errorMessage === "string" ? assistant.errorMessage : undefined;
 		const failed = !assistant || stopReason === "error" || stopReason === "aborted" || Boolean(fallbackError);
@@ -227,9 +248,9 @@ function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
 			output,
 			error: fallbackError ?? assistantError ?? (!assistant ? "Subagent exited without an assistant response." : undefined),
 			stopReason,
-			sessionFile: ctx.sessionManager.getSessionFile(),
-			provider: typeof assistant?.provider === "string" ? assistant.provider : ctx.model?.provider,
-			model: typeof assistant?.model === "string" ? assistant.model : ctx.model?.id,
+			sessionFile: ctx?.sessionManager.getSessionFile(),
+			provider: typeof assistant?.provider === "string" ? assistant.provider : ctx?.model?.provider,
+			model: typeof assistant?.model === "string" ? assistant.model : ctx?.model?.id,
 			thinking: pi.getThinkingLevel(),
 			finishedAt: Date.now(),
 		};
@@ -240,6 +261,62 @@ function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
 			console.error(`[tmux-subagent] Failed to write result: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	};
+
+	if (idleTimeoutMs > 0 || maxRuntimeMs > 0) {
+		// Track agent activity. Any of these events means the child is making
+		// progress: a stalled LLM request (no deltas), a hung tool execution, a
+		// compaction hang, or an interactive wait (auth/trust prompt) produce no
+		// events at all, so the watchdog below can detect and terminate them.
+		const activityEvents = [
+			"agent_start",
+			"turn_start",
+			"turn_end",
+			"message_start",
+			"message_update",
+			"message_end",
+			"tool_execution_start",
+			"tool_execution_update",
+			"tool_execution_end",
+		] as const;
+		for (const event of activityEvents) {
+			(
+				pi.on as unknown as (
+					event: string,
+					handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
+				) => void
+			)(event, (_event, ctx) => {
+				latestCtx = ctx;
+				lastActivityAt = Date.now();
+				if (event === "tool_execution_start") toolExecutingSince = Date.now();
+				else if (event === "tool_execution_end") toolExecutingSince = undefined;
+			});
+		}
+
+		watchdog = setInterval(async () => {
+			if (reported) return;
+			const now = Date.now();
+			let reason: string | undefined;
+			if (idleTimeoutMs > 0) {
+				// While a tool is running, count inactivity from the tool's start
+				// so silent-but-long commands get the same budget as everything else.
+				const reference =
+					toolExecutingSince !== undefined && toolExecutingSince < lastActivityAt
+						? toolExecutingSince
+						: lastActivityAt;
+				if (now - reference > idleTimeoutMs) {
+					reason = `Subagent was idle for ${formatDurationMs(now - reference)} with no agent activity (idle timeout ${formatDurationMs(idleTimeoutMs)}). This usually means an LLM request, a tool call, or an interactive prompt in the child stalled without erroring or exiting.`;
+				}
+			}
+			if (!reason && maxRuntimeMs > 0 && now - startedAt > maxRuntimeMs) {
+				reason = `Subagent exceeded the ${formatDurationMs(maxRuntimeMs)} wall-clock limit.`;
+			}
+			if (!reason) return;
+			await report(latestCtx, reason);
+			// Force-exit so the pane dies too; result.json (written above) is what
+			// the parent actually consumes.
+			process.exit(1);
+		}, CHILD_WATCHDOG_INTERVAL_MS);
+	}
 
 	// agent_settled was added after older peer type declarations but is present
 	// in the Pi runtime this extension targets.
@@ -271,6 +348,29 @@ function formatDuration(startedAt: number | undefined, finishedAt = Date.now()):
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	return `${minutes}m ${seconds % 60}s`;
+}
+
+function formatDurationMs(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return `${minutes}m ${seconds % 60}s`;
+}
+
+/** Parse a non-negative millisecond value from env; 0/NaN/undefined/negative become 0 (disabled). */
+function parseTimeoutEnv(value: string | undefined): number {
+	if (!value) return 0;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/** Validate a user-supplied timeout parameter. Returns 0 when the timeout is disabled. */
+function resolveTimeoutParam(value: number | undefined): number {
+	if (value === undefined) return 0;
+	if (!Number.isFinite(value) || value < 0) {
+		throw new Error("timeoutMs and idleTimeoutMs must be non-negative numbers of milliseconds (0 disables).");
+	}
+	return value;
 }
 
 function detailsFor(spec: RunSpec, status: RunStatus, extra: Partial<RunDetails> = {}): RunDetails {
@@ -439,10 +539,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Run one delegated task in a separate interactive Pi process inside tmux. Calls are serialized: only one child works at a time, even if several calls are requested together. The child inherits the current provider, model, and thinking level unless overridden. Live pane output and a copy/paste pi --attach-subagent command are shown while it runs. Output is capped at 50KB or 2000 lines; the complete child session is preserved on disk.",
+			"Run one delegated task in a separate interactive Pi process inside tmux. Calls are serialized: only one child works at a time, even if several calls are requested together. The child inherits the current provider, model, and thinking level unless overridden. Live pane output and a copy/paste pi --attach-subagent command are shown while it runs. Output is capped at 50KB or 2000 lines; the complete child session is preserved on disk. Stalled subagents (failed LLM calls that neither error nor exit, hung tool executions, interactive waits) are killed after idleTimeoutMs (default 600000 ms = 10 min) of inactivity with no result, or after timeoutMs wall-clock time (default disabled). Pass 0 to disable a timeout.",
 		promptSnippet: "Run one delegated task in an observable, tmux-backed Pi session",
 		promptGuidelines: [
-			"Use subagent once per delegated task; subagent calls are serialized automatically, so prefer multiple simple calls over asking one child to orchestrate other children.",
 		],
 		parameters: Type.Object({
 			task: Type.String({ description: "The complete task for the child Pi process" }),
@@ -456,10 +555,25 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					description: "Thinking level override. Defaults to the current thinking level.",
 				}),
 			),
+			timeoutMs: Type.Optional(
+				Type.Number({
+					description:
+						"Hard wall-clock limit in milliseconds for the whole subagent run. 0 disables (default). The child is force-killed when exceeded.",
+				}),
+			),
+			idleTimeoutMs: Type.Optional(
+				Type.Number({
+					description:
+						"Inactivity limit in milliseconds: the subagent is killed when no agent activity or output is seen for this long. Defaults to 600000 (10 min). Pass 0 to disable.",
+				}),
+			),
 		}),
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			if (!params.task.trim()) throw new Error("Subagent task must not be empty.");
+			const maxRuntimeMs = resolveTimeoutParam(params.timeoutMs);
+			// Explicit 0 disables the idle watchdog; omitting the parameter uses the default.
+			const idleTimeoutMs = params.idleTimeoutMs === undefined ? DEFAULT_IDLE_TIMEOUT_MS : resolveTimeoutParam(params.idleTimeoutMs);
 			const cwd = path.resolve(ctx.cwd, params.cwd?.trim() || ".");
 			const selectedModel = resolveModel(ctx, params.provider, params.model);
 			const thinking = params.thinking ?? pi.getThinkingLevel();
@@ -524,6 +638,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						"exec env",
 						`${CHILD_ENV}=1`,
 						`${RESULT_ENV}=${shellQuote(resultPath)}`,
+						`${IDLE_TIMEOUT_ENV}=${idleTimeoutMs}`,
+						`${MAX_RUNTIME_ENV}=${maxRuntimeMs}`,
 						piArgs.map(shellQuote).join(" "),
 					].join(" ");
 
@@ -558,9 +674,37 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						if (entered.code !== 0) throw new Error(entered.stderr.trim() || "Failed to submit child command.");
 
 						let lastPane = "";
+						let lastPaneChangedAt = Date.now();
 						let childResult: ChildResult | undefined;
+
+						const failAndCleanup = async (reason: string): Promise<never> => {
+							try {
+								await pi.exec("tmux", tmuxArgs("kill-session", "-t", tmuxSession));
+							} catch {
+								// Best-effort cleanup; the diagnostic below matters more.
+							}
+							if (activeSession === tmuxSession) activeSession = undefined;
+							throw new Error(
+								`Subagent ${reason}\n\n${lastPane || "No pane output."}\n\nAttach: ${spec.attachCommand}\nCapture: ${spec.captureCommand}`,
+							);
+						};
+
 						while (!childResult) {
 							if (signal?.aborted) throw new Error("Subagent aborted.");
+							// Watchdog: without this, a child that stays alive without
+							// ever writing result.json (stalled LLM request, hung tool,
+							// interactive wait) would make the parent poll forever.
+							const now = Date.now();
+							if (maxRuntimeMs > 0 && now - startedAt > maxRuntimeMs) {
+								await failAndCleanup(
+									`exceeded the ${formatDurationMs(maxRuntimeMs)} wall-clock limit without producing a result.`,
+								);
+							}
+							if (idleTimeoutMs > 0 && now - lastPaneChangedAt > idleTimeoutMs + PARENT_IDLE_GRACE_MS) {
+								await failAndCleanup(
+									`was idle (no output for ${formatDurationMs(now - lastPaneChangedAt)}) without producing a result. The LLM call or a tool inside the child likely stalled.`,
+								);
+							}
 							try {
 								childResult = JSON.parse(await readFile(resultPath, "utf8")) as ChildResult;
 								break;
@@ -575,6 +719,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 								const pane = trimPane(paneResult.stdout);
 								if (pane && pane !== lastPane) {
 									lastPane = pane;
+									lastPaneChangedAt = Date.now();
 									const details = detailsFor(spec, "running", { pane, startedAt });
 									onUpdate?.({ content: [{ type: "text", text: partialText(details) }], details });
 								}
