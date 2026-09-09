@@ -207,12 +207,12 @@ async function loadPiAi() {
 	const tried = [];
 
 	try {
-		return await import("@earendil-works/pi-ai");
+		return await import("@earendil-works/pi-ai/providers/all");
 	} catch (err) {
-		tried.push(`@earendil-works/pi-ai (${err?.code || err?.message || "not found"})`);
+		tried.push(`@earendil-works/pi-ai/providers/all (${err?.code || err?.message || "not found"})`);
 	}
 
-	for (const candidate of collectModuleCandidates("index.js", "PI_AI_MODULE_PATH")) {
+	for (const candidate of collectModuleCandidates("providers/all.js", "PI_AI_MODULE_PATH")) {
 		if (!existsSync(candidate)) continue;
 		try {
 			return await import(pathToFileURL(candidate).href);
@@ -222,7 +222,7 @@ async function loadPiAi() {
 	}
 
 	throw new Error(
-		`Could not load @earendil-works/pi-ai. Set PI_AI_MODULE_PATH to its dist/index.js.\nTried:\n- ${tried.join("\n- ")}`,
+		`Could not load @earendil-works/pi-ai/providers/all. Set PI_AI_MODULE_PATH to its dist/providers/all.js.\nTried:\n- ${tried.join("\n- ")}`,
 	);
 }
 
@@ -302,7 +302,7 @@ function getCachedOAuthAccess(entry, now = Date.now()) {
 }
 
 function pickFastModel(provider, requestedModel, piAi) {
-	const models = typeof piAi.getModels === "function" ? piAi.getModels(provider) : [];
+	const models = piAi.getBuiltinModels(provider);
 	if (!Array.isArray(models) || models.length === 0) {
 		if (requestedModel) return { id: requestedModel, baseUrl: undefined };
 		if (provider === "openai-codex") return { id: "gpt-5.4-mini", baseUrl: "https://chatgpt.com/backend-api" };
