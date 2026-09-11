@@ -19,6 +19,7 @@ SEARCH_PATHS=(
     # Linux common paths
     "/usr/share/ghidra"
     "/usr/local/share/ghidra"
+    "/snap/bin"
 )
 
 # Check GHIDRA_HOME environment variable first
@@ -30,11 +31,17 @@ if [[ -n "$GHIDRA_HOME" ]]; then
     fi
 fi
 
+# Check with command
+if command -v ghidra.analyzeHeadless >/dev/null 2>&1; then
+    command -v ghidra.analyzeHeadless
+    exit 0
+fi
+
 # Search through common paths
 for base_path in "${SEARCH_PATHS[@]}"; do
     if [[ -d "$base_path" ]]; then
         # Find analyzeHeadless in the directory tree (handles versioned paths)
-        HEADLESS=$(find "$base_path" -name "analyzeHeadless" -type f 2>/dev/null | head -n 1)
+        HEADLESS=$(find "$base_path" \( -name "analyzeHeadless" -o -name "ghidra.analyzeHeadless" \) -executable 2>/dev/null | head -n 1)
         if [[ -n "$HEADLESS" && -x "$HEADLESS" ]]; then
             echo "$HEADLESS"
             exit 0
@@ -43,7 +50,7 @@ for base_path in "${SEARCH_PATHS[@]}"; do
 done
 
 # Try to find it anywhere on the system as a last resort
-HEADLESS=$(find /opt /usr/local /Applications "$HOME" -name "analyzeHeadless" -type f 2>/dev/null | head -n 1)
+HEADLESS=$(find /opt /usr/local /Applications "$HOME" \( -name "analyzeHeadless" -o -name "ghidra.analyzeHeadless" \) -xtype f 2>/dev/null | head -n 1)
 if [[ -n "$HEADLESS" && -x "$HEADLESS" ]]; then
     echo "$HEADLESS"
     exit 0
