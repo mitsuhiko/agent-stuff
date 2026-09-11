@@ -2,9 +2,25 @@
 
 All notable changes to agent-stuff are documented here.
 
-## Unreleased
+## 1.7.0
 
+* Replaced the `multi-edit` extension with `unified-edit`: the `edit` tool now takes a single required text payload (a marked row edit script or a Codex/apply_patch-style patch) with preflight validation, and coerces stray `patch`/`input`/`content` arguments into the payload. This retires the optional `path`/`oldText`/`newText`/`multi`/`patch` parameter surface, whose "`patch` parameter is mutually exclusive with path/oldText/newText/multi" error triggered on GPT-5.x tool calls that emit `null` or redundant classic parameters alongside `patch`.
+* Replaced the `loop` extension with an opt-in `goal` extension backed by session goals, with automatic continuation and the `get_goal`, `create_goal`, and `update_goal` tools.
+* Added a `subagent` extension that serially runs one observable Pi child at a time in tmux.
+* Added a `no-sleep` extension with `/no-sleep` macOS `caffeinate` integration.
+* Added a `trust-github-repos` extension that automatically trusts GitHub checkouts owned by `earendil-works` or `mitsuhiko`.
+* Added an idle continue shortcut (`shift+option+enter`) that sends `continue` only when the agent is stopped.
+* Added an `audio-transcription` skill with local model precaching.
+* Added the `dayowl` and `modern-dark` themes.
+* Added an optional headless Chrome mode, improved mobile emulation, and profile isolation to the `web-browser` skill, with Chrome extensions disabled in headless mode.
+* Added a cost/session column and provider grouping to `/session-breakdown`, and skipped faux provider sessions.
+* Added bash status to the prompt editor mode label.
+* Migrated extensions and skills to the `@earendil-works` Pi packages.
+* Removed the `context` and `go-to-bed` extensions, the `mermaid` skill, and the prebuilt `distributions/` packages.
 * Fixed the notify extension leaking OSC 8 hyperlink text into fullscreen prompt editors.
+* Fixed `/answer` to handle question extraction failures.
+* Fixed the `web-browser` skill to support statement eval syntax.
+* Removed the `Ctrl+Shift+F` shortcut from `/files`.
 
 ## 1.6.0
 
