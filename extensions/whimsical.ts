@@ -457,6 +457,13 @@ const messages = [
   "Glazing the graphics...",
   "Topping with tests...",
   "Cherry-picking the commits...",
+  "Scheming in the Landsraad...",
+  "Awakening ancestral memory...",
+  "Seeking the Kwisatz Haderach...",
+  "Seeking lisan al-Gaib...",
+  "Consulting the Mentats...",
+  "Peering through prescience...",
+  "Navigating possible futures...",
 ];
 
 function pickRandom(): string {
