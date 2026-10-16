@@ -1985,6 +1985,10 @@ Instructions:
 					ctx.ui.notify("Navigation cancelled. Use /end-review to try again.", "info");
 					return "cancelled";
 				}
+				// Navigating to a message entry fills the editor with its text; clear it
+				// (same cleanup the review-start path already does) so stale message
+				// text does not linger in the input box.
+				ctx.ui.setEditorText("");
 			} catch (error) {
 				ctx.ui.notify(`Failed to return: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return "error";
@@ -2016,9 +2020,9 @@ Instructions:
 		clearReviewState(ctx);
 
 		if (action === "returnAndSummarize") {
-			if (!ctx.ui.getEditorText().trim()) {
-				ctx.ui.setEditorText("Act on the review findings");
-			}
+			// Unconditionally replace whatever navigateTree left in the editor:
+			// the empty-check guard skipped this when the editor held stale text.
+			ctx.ui.setEditorText("Act on the review findings");
 			if (notifySuccess) {
 				ctx.ui.notify("Review complete! Returned and summarized.", "info");
 			}
