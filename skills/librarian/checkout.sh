@@ -205,10 +205,19 @@ if ! git -C "$checkout_path" remote get-url origin >/dev/null 2>&1; then
   git -C "$checkout_path" remote add origin "$origin_url"
 fi
 
-# If remote URL changed (e.g. host shorthand), normalize to canonical HTTPS URL.
+# Normalize the origin URL only when it is a different spelling of the same
+# host/org/repo (e.g. ssh/scp-style or a missing .git suffix). If the existing
+# origin does not parse to the same repository, leave it alone: some forges
+# serve repositories outside the host/org/repo layout (https://git.freebsd.org/ports.git
+# has no org segment), and rewriting those breaks the next fetch.
 current_origin="$(git -C "$checkout_path" remote get-url origin 2>/dev/null || true)"
-if [[ "$current_origin" != "$origin_url" ]]; then
-  git -C "$checkout_path" remote set-url origin "$origin_url"
+if [[ -n "$current_origin" && "$current_origin" != "$origin_url" ]]; then
+  if cur_parsed="$(parse_repo "$current_origin" 2>/dev/null)" \
+     && [[ "$(sed -n '1p' <<<"$cur_parsed")" == "$host" \
+        && "$(sed -n '2p' <<<"$cur_parsed")" == "$org" \
+        && "$(sed -n '3p' <<<"$cur_parsed")" == "$repo" ]]; then
+    git -C "$checkout_path" remote set-url origin "$origin_url"
+  fi
 fi
 
 last_fetch_file="$checkout_path/.git/librarian-last-fetch"
